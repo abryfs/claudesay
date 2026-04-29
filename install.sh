@@ -37,29 +37,27 @@ fi
 
 cp "$SETTINGS" "$SETTINGS.bak.$(date +%s)"
 
-ALREADY=$(jq --arg p "$SCRIPT_PATH" '
-    (.hooks.Stop // [])
-    | map(.hooks // [])
-    | flatten
-    | map(.command // "")
-    | any(contains($p))
-' "$SETTINGS")
-
-if [[ "$ALREADY" == "true" ]]; then
-    echo "✓ Stop hook already wired in $SETTINGS"
-else
-    TMP=$(mktemp)
-    jq --arg p "$SCRIPT_PATH" '
-        .hooks //= {}
-        | .hooks.Stop //= []
-        | .hooks.Stop += [{
-            "matcher": "*",
-            "hooks": [{ "type": "command", "command": $p }]
-          }]
-    ' "$SETTINGS" > "$TMP"
-    mv "$TMP" "$SETTINGS"
-    echo "✓ wired Stop hook into $SETTINGS (backup at $SETTINGS.bak.*)"
-fi
+# Self-healing: strip any existing claudesay or legacy voice-notify
+# Stop entries first, then add the canonical one. Prevents double-fire.
+TMP=$(mktemp)
+jq --arg p "$SCRIPT_PATH" '
+    .hooks //= {}
+    | .hooks.Stop = (
+        (.hooks.Stop // [])
+        | map(
+            .hooks = ((.hooks // []) | map(select(
+                ((.command // "") | test("claudesay\\.sh|voice-notify\\.sh")) | not
+            )))
+            | select((.hooks // []) | length > 0)
+          )
+      )
+    | .hooks.Stop += [{
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": $p }]
+      }]
+' "$SETTINGS" > "$TMP"
+mv "$TMP" "$SETTINGS"
+echo "✓ wired Stop hook into $SETTINGS (backup at $SETTINGS.bak.*)"
 
 cat <<EOF
 
