@@ -2,11 +2,43 @@
 
 **Tasteful voice notifications for Claude Code.** A single bash hook that speaks the meaningful end of Claude's reply when a turn finishes — and stays silent the rest of the time. Pure macOS `say`. No API keys, no daemon, no per-call cost.
 
+## Install
+
+### Tell Claude Code to install it for you
+
+Open a Claude Code session and paste:
+
+```
+Install claudesay (https://github.com/abryfs/claudesay) for me by running its install script. Use --no-picker so it runs non-interactively, then confirm the Stop hook is wired in ~/.claude/settings.json. If I want a non-default voice later, I can re-run install.sh interactively to use the picker.
+```
+
+Claude Code will run the equivalent of:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/install.sh | bash -s -- --no-picker
+```
+
+To pick a specific voice non-interactively (e.g. for a remote install via Claude Code):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/install.sh | bash -s -- --voice=Daniel
+```
+
+### Run it yourself in a terminal (interactive voice picker)
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/install.sh | bash
 ```
 
-That's it. Open a Claude Code session, ask something, hear the answer.
+Use ↑↓ to walk through every English voice on your Mac. Each highlight previews the voice live. ⏎ to select, `r` to replay, `q` to keep the default.
+
+### Or clone and run
+
+```bash
+git clone https://github.com/abryfs/claudesay && cd claudesay && ./install.sh
+```
+
+Open a new Claude Code session. Ask something. When the response ends, you'll hear the last sentence.
 
 ---
 
@@ -34,6 +66,30 @@ claudesay is the smallest thing that actually works:
 | Tool-use-only assistant turn *(no prose)* | **Skipped** |
 | You start typing while it speaks | **Cut off** *(barge-in via `killall say`)* |
 
+## Voice picker
+
+Run `./install.sh` (or `bash install.sh`) in a real terminal and you'll get an arrow-key TUI:
+
+```
+  Pick a voice for claudesay
+  ↑↓ navigate (auto-preview)   ⏎ select   r replay   a all/english   q default
+
+    Alex                       en_US
+  ▸ Samantha                   en_US
+    Daniel                     en_GB
+    Karen                      en_AU
+    Moira                      en_IE
+    Tessa                      en_ZA
+    Veena                      en_IN
+    …
+
+  Hello! My name is Samantha.
+```
+
+Each ↑/↓ kills the current preview and starts a new `say -v <voice>` so you can audition voices in seconds. `⏎` writes your choice to `~/.claude/settings.json` under `env.CLAUDESAY_VOICE`.
+
+If you don't have a TTY (e.g. running through Claude Code's Bash tool), the picker auto-falls-back to `Samantha` unless you pass `--voice=<name>`.
+
 ## Configuration
 
 Set env vars in `~/.claude/settings.json` (or your shell):
@@ -47,7 +103,8 @@ Set env vars in `~/.claude/settings.json` (or your shell):
 | `CLAUDESAY_RATE` | system | `say -r` words/min. Try `200`–`260` for snappier reads. |
 | `CLAUDESAY_DISABLE` | unset | Set to anything to silence without uninstalling. |
 
-Example:
+Example settings.json snippet:
+
 ```json
 {
   "env": {
@@ -74,25 +131,16 @@ The installer adds a `Stop` hook entry in `~/.claude/settings.json`:
 
 `Stop` fires when Claude finishes a turn. The script reads the transcript path from stdin, pulls the last text-bearing assistant message, and decides whether to speak it.
 
-## Manual install
-
-If you'd rather not pipe to bash:
-
-```bash
-git clone https://github.com/abryfs/claudesay
-cd claudesay
-./install.sh
-```
-
-Or manually:
+## Manual install (no script)
 
 ```bash
 mkdir -p ~/.claude/hooks
 curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/claudesay.sh \
     -o ~/.claude/hooks/claudesay.sh
 chmod +x ~/.claude/hooks/claudesay.sh
-# Then add the Stop hook entry shown above to ~/.claude/settings.json
 ```
+
+Then add the Stop hook block above to `~/.claude/settings.json`.
 
 ## Uninstall
 
