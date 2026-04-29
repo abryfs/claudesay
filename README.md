@@ -73,7 +73,7 @@ Run `./install.sh` (or `bash install.sh`) in a real terminal and you'll get an a
 
 ```
   Pick a voice for claudesay
-  ↑↓ navigate (auto-preview)   ⏎ select   r replay   a all/english   q default
+  ↑↓ navigate (auto-preview)   ⏎ select   r replay   q default
 
     Alex                       en_US
   ▸ Samantha                   en_US
@@ -123,7 +123,6 @@ The installer adds a `Stop` hook entry in `~/.claude/settings.json`. **Use absol
 {
   "hooks": {
     "Stop": [{
-      "matcher": "*",
       "hooks": [{
         "type": "command",
         "command": "/Users/<you>/.claude/hooks/claudesay.sh",
@@ -135,6 +134,8 @@ The installer adds a `Stop` hook entry in `~/.claude/settings.json`. **Use absol
 ```
 
 `Stop` fires when Claude finishes a turn. The script reads the transcript path from stdin, pulls the last text-bearing assistant message, and decides whether to speak it. The `timeout: 15` is a safety floor in case `say` ever blocks; the hook itself returns in well under a second.
+
+> **Note:** Stop hooks don't honor a `matcher` field — Anthropic's docs say it's silently ignored. claudesay omits it for clarity.
 
 ## Manual install (no script)
 
@@ -171,6 +172,35 @@ stty sane && tput cnorm
 ```
 
 The installer refuses to touch a `settings.json` that isn't valid JSON. If that happens, the file is left untouched and you'll see exactly which file to fix.
+
+### No audio when Claude finishes a turn?
+
+Run through these in order — most setups break at one of these:
+
+```bash
+# 1. Does `say` work at all?
+say -v Samantha "test"
+
+# 2. Is the hook executable and present?
+ls -l ~/.claude/hooks/claudesay.sh
+
+# 3. Is the Stop hook actually wired?
+jq '.hooks.Stop' ~/.claude/settings.json
+
+# 4. Replay the hook against your most recent transcript and trace it.
+LATEST=$(ls -t ~/.claude/projects/*/*.jsonl | head -1)
+echo "{\"transcript_path\":\"$LATEST\",\"session_id\":\"debug\",\"stop_hook_active\":false}" \
+  | bash -x ~/.claude/hooks/claudesay.sh
+```
+
+Common reasons it stays silent (all by design):
+
+- The last assistant message is shorter than `CLAUDESAY_MIN_LEN` (40 chars).
+- The message is filler ("Let me check…", "I'll run X").
+- The same content was just spoken (deduped).
+- A previous Stop fired within `CLAUDESAY_DEBOUNCE` seconds (4s).
+
+To temporarily disable without uninstalling: `export CLAUDESAY_DISABLE=1` (or set it in `settings.json` `env`).
 
 ## How it filters noise
 

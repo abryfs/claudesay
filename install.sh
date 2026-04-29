@@ -30,7 +30,16 @@ USAGE
             exit 0 ;;
     esac
 done
-[[ -n "$FLAG_VOICE" ]] && export CLAUDESAY_VOICE="$FLAG_VOICE"
+# Reject --voice values that would be parsed as a flag by `say`. The hook
+# itself validates again at runtime, but catching it here gives a clean
+# error instead of silently writing a bad voice into settings.json.
+if [[ -n "$FLAG_VOICE" ]]; then
+    if [[ "${FLAG_VOICE:0:1}" == "-" ]]; then
+        echo "✗ --voice cannot start with '-' (would be parsed as a say(1) flag)" >&2
+        exit 1
+    fi
+    export CLAUDESAY_VOICE="$FLAG_VOICE"
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "claudesay v1 is macOS-only (uses /usr/bin/say). Aborting." >&2
@@ -117,24 +126,44 @@ pick_voice() {
         return 0
     fi
 
-    local term_rows; term_rows=$(tput lines 2>/dev/null || echo 24)
-    local rows=$((term_rows - 10))
-    [[ $rows -lt 6 ]] && rows=6
-    [[ $rows -gt $n ]] && rows=$n
-
+    local rows
     local cursor=$samantha_idx
     local viewport_start=0
-    [[ $cursor -ge $rows ]] && viewport_start=$((cursor - rows + 1))
-
     local last_previewed=""
     local preview_pid=""
+
+    # Recompute viewport size — picks up terminal resize between keystrokes.
+    recompute_rows() {
+        local term_rows
+        term_rows=$(tput lines 2>/dev/null || echo 24)
+        rows=$((term_rows - 10))
+        [[ $rows -lt 6 ]] && rows=6
+        [[ $rows -gt $n ]] && rows=$n
+        # Re-clamp viewport_start in case terminal shrank below current cursor.
+        if [[ $cursor -ge $((viewport_start + rows)) ]]; then
+            viewport_start=$((cursor - rows + 1))
+            [[ $viewport_start -lt 0 ]] && viewport_start=0
+        fi
+    }
+    recompute_rows
+    [[ $cursor -ge $rows ]] && viewport_start=$((cursor - rows + 1))
+
+    # Verify-then-kill — a stored PID may have been recycled.
+    kill_if_say() {
+        local pid="$1"
+        [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]] && return 0
+        local comm
+        comm=$(ps -p "$pid" -o comm= 2>/dev/null)
+        comm="${comm##*/}"
+        comm="${comm##[[:space:]]}"
+        comm="${comm%%[[:space:]]}"
+        [[ "$comm" == "say" ]] && kill "$pid" 2>/dev/null || true
+    }
 
     cleanup() {
         tput cnorm 2>/dev/null || true
         stty echo 2>/dev/null || true
-        if [[ -n "$preview_pid" ]]; then
-            kill "$preview_pid" 2>/dev/null || true
-        fi
+        kill_if_say "$preview_pid"
     }
     # Run cleanup on any normal exit AND on every fatal signal we can trap.
     # Without EXIT, an early `read` failure (broken TTY, terminal close)
@@ -146,6 +175,7 @@ pick_voice() {
     stty -echo 2>/dev/null || true
 
     redraw() {
+        recompute_rows
         clear
         printf '\n  \033[1mPick a voice for claudesay\033[0m\n'
         printf '  \033[2m↑↓ navigate (auto-preview)   ⏎ select   r replay   q default\033[0m\n\n'
@@ -168,9 +198,7 @@ pick_voice() {
         if [[ "$force" != "force" && "${NAMES[cursor]}" == "$last_previewed" ]]; then
             return
         fi
-        if [[ -n "$preview_pid" ]]; then
-            kill "$preview_pid" 2>/dev/null || true
-        fi
+        kill_if_say "$preview_pid"
         say -v "${NAMES[cursor]}" "${SAMPLES[cursor]}" </dev/null >/dev/null 2>&1 &
         preview_pid=$!
         last_previewed="${NAMES[cursor]}"
@@ -277,7 +305,6 @@ if ! jq --arg p "$SCRIPT_PATH" \
           )
       )
     | .hooks.Stop += [{
-        "matcher": "*",
         "hooks": [{ "type": "command", "command": $p, "timeout": $t }]
       }]
 ' "$SETTINGS" >"$TMP"; then

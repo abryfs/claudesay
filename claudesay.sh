@@ -27,10 +27,12 @@ MIN_LEN="${CLAUDESAY_MIN_LEN:-40}"
 MAX_SPEAK="${CLAUDESAY_MAX:-220}"
 RATE="${CLAUDESAY_RATE:-}"
 
-# Validate VOICE/RATE — these become argv to `say`. Reject anything that
-# could be parsed as a flag (starting with `-`) or that contains shell-
-# unfriendly chars. macOS voice names match [A-Za-z][A-Za-z0-9 ()]*.
-if ! [[ "$VOICE" =~ ^[A-Za-z][A-Za-z0-9\ \(\)]*$ ]]; then
+# Validate VOICE/RATE — these become argv to `say`. The only real risk
+# is a value that starts with `-` being parsed as a flag (CLAUDESAY_VOICE
+# could otherwise be set to something like '-r 1000 -o /tmp/x.aiff').
+# Don't be stricter than that — real macOS voice names include apostrophes
+# (O'Hara), accents (Amélie), spaces (Bad News), and parens.
+if [[ "${VOICE:0:1}" == "-" ]]; then
     VOICE="Samantha"
 fi
 if [[ -n "$RATE" ]] && ! [[ "$RATE" =~ ^[0-9]+$ ]]; then
@@ -67,21 +69,41 @@ LAST_FILE="$STATE_DIR/$SAFE_KEY.last"
 HASH_FILE="$STATE_DIR/$SAFE_KEY.hash"
 PID_FILE="$STATE_DIR/$SAFE_KEY.pid"
 
-# Refuse to follow symlinks for state files — defense-in-depth even with
-# a private state dir.
+# Self-heal any planted symlinks. Removing a symlink with `rm -f` deletes
+# the link itself, not its target. Subsequent writes go through `mv -f`
+# (rename(2)) which atomically replaces a path even if a same-uid attacker
+# re-symlinks it between this `rm` and the write — rename swaps the dest
+# inode rather than following the link.
 for f in "$LAST_FILE" "$HASH_FILE" "$PID_FILE"; do
-    [[ -L "$f" ]] && exit 0
+    [[ -L "$f" ]] && rm -f "$f"
 done
 
-# Debounce — collapse rapid Stop events from the same session.
-NOW=$(date +%s)
-if [[ -f "$LAST_FILE" ]]; then
-    LAST_AT=$(<"$LAST_FILE")
-    if [[ -n "$LAST_AT" && $((NOW - LAST_AT)) -lt $DEBOUNCE_SEC ]]; then
-        exit 0
+# Atomic state writer — used for every state file so a TOCTOU symlink
+# can't make us write through a planted target.
+write_state() {
+    local target="$1"
+    local value="$2"
+    local tmp="$target.$$.tmp"
+    if printf '%s\n' "$value" >"$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$target" 2>/dev/null || rm -f "$tmp"
     fi
+}
+
+# Debounce — collapse rapid Stop events from the same session. Validate
+# LAST_AT is numeric before arithmetic context: bash recursively evaluates
+# variables in `$(( … ))`, so a planted `LAST_AT='a[$(id)]'` could execute.
+NOW=$(date +%s)
+LAST_AT=""
+if [[ -f "$LAST_FILE" && ! -L "$LAST_FILE" ]]; then
+    LAST_AT=$(<"$LAST_FILE" 2>/dev/null)
 fi
-printf '%s\n' "$NOW" >"$LAST_FILE"
+if [[ ! "$LAST_AT" =~ ^[0-9]+$ ]]; then
+    LAST_AT=""
+fi
+if [[ -n "$LAST_AT" && $((NOW - LAST_AT)) -lt $DEBOUNCE_SEC ]]; then
+    exit 0
+fi
+write_state "$LAST_FILE" "$NOW"
 
 # Last *text-bearing* assistant message in the .jsonl transcript.
 # - Tool-use, thinking, redacted_thinking blocks are skipped (we only speak prose).
@@ -105,24 +127,24 @@ MSG=$(jq -s -r '
 
 # Filter mid-pipeline filler. A long message starting with "Now" is
 # probably a real summary — only filter if the message is short AND
-# looks transitional. The U+2019 variant (’) catches smart-quoted "I'll".
+# looks transitional. We lowercase the prefix before matching because
+# bash 3.2 (default on macOS) ignores `shopt -s nocasematch` inside
+# `case` statements; pre-lowercasing is portable.
 if [[ ${#MSG} -lt 120 ]]; then
-    shopt -s nocasematch
-    case "$MSG" in
-        "Let me "*|"I'll "*|"I"$'\xe2\x80\x99'"ll "*|\
-        "I will "*|"I'm going to "*|"I"$'\xe2\x80\x99'"m going to "*|\
-        "I'm "*|"I"$'\xe2\x80\x99'"m "*|"I am "*|\
-        "Now "*|"Now I"*|"Now let me"*|\
-        "Running "*|"Reading "*|"Checking "*|"Looking "*|"Searching "*|\
-        "Going "*|"Let's "*|"Let"$'\xe2\x80\x99'"s "*|"Lets "*|\
-        "Trying "*|"Testing "*|\
-        "One moment"*|"Hold on"*|"Hmm"*|"OK "*|"OK,"*|"Sure"*|"Got it"*|\
-        "Done"*|"Got "*|"Yep"*|"Yes"*|"No,"*|"Actually"*)
-            shopt -u nocasematch
+    PREFIX_LOWER=$(printf '%s' "${MSG:0:30}" | tr '[:upper:]' '[:lower:]')
+    case "$PREFIX_LOWER" in
+        "let me "*|"i'll "*|"i"$'\xe2\x80\x99'"ll "*|\
+        "i will "*|"i'm going to "*|"i"$'\xe2\x80\x99'"m going to "*|\
+        "i'm "*|"i"$'\xe2\x80\x99'"m "*|"i am "*|\
+        "now "*|"now i"*|"now let me"*|\
+        "running "*|"reading "*|"checking "*|"looking "*|"searching "*|\
+        "going "*|"let's "*|"let"$'\xe2\x80\x99'"s "*|"lets "*|\
+        "trying "*|"testing "*|\
+        "one moment"*|"hold on"*|"hmm"*|"ok "*|"ok,"*|"sure"*|"got it"*|\
+        "done"*|"got "*|"yep"*|"yes"*|"no,"*|"actually"*)
             exit 0
             ;;
     esac
-    shopt -u nocasematch
 fi
 
 # Dedupe — never repeat exactly the same message back to back. md5 is BSD
@@ -137,10 +159,14 @@ hash_string() {
     fi
 }
 HASH=$(hash_string "$MSG")
-if [[ -f "$HASH_FILE" && "$(<"$HASH_FILE")" == "$HASH" ]]; then
+EXISTING_HASH=""
+if [[ -f "$HASH_FILE" && ! -L "$HASH_FILE" ]]; then
+    EXISTING_HASH=$(<"$HASH_FILE" 2>/dev/null)
+fi
+if [[ "$EXISTING_HASH" == "$HASH" ]]; then
     exit 0
 fi
-printf '%s\n' "$HASH" >"$HASH_FILE"
+write_state "$HASH_FILE" "$HASH"
 
 # Pick the last meaningful sentence — questions and summaries both land
 # there; first sentences are usually throat-clearing.
@@ -182,11 +208,19 @@ SPEAK=$(printf '%s' "$SPEAK" | sed -E '
 [[ "${SPEAK:0:1}" == "-" ]] && SPEAK=" $SPEAK"
 
 # Barge-in — kill only this session's previous `say` (PID-tracked), not
-# every `say` on the user's machine.
-if [[ -f "$PID_FILE" ]]; then
-    OLD_PID=$(<"$PID_FILE")
-    if [[ -n "$OLD_PID" && "$OLD_PID" =~ ^[0-9]+$ ]]; then
-        kill "$OLD_PID" 2>/dev/null || true
+# every `say` on the user's machine. Verify the PID is still a `say`
+# process before sending SIGTERM: macOS PIDs recycle, and we don't want
+# to kill an unrelated process that happens to have inherited the PID.
+if [[ -f "$PID_FILE" && ! -L "$PID_FILE" ]]; then
+    OLD_PID=$(<"$PID_FILE" 2>/dev/null)
+    if [[ "$OLD_PID" =~ ^[0-9]+$ ]]; then
+        OLD_COMM=$(ps -p "$OLD_PID" -o comm= 2>/dev/null)
+        OLD_COMM="${OLD_COMM##*/}"
+        OLD_COMM="${OLD_COMM##[[:space:]]}"
+        OLD_COMM="${OLD_COMM%%[[:space:]]}"
+        if [[ "$OLD_COMM" == "say" ]]; then
+            kill "$OLD_PID" 2>/dev/null || true
+        fi
     fi
 fi
 
@@ -196,6 +230,6 @@ else
     say -v "$VOICE" "$SPEAK" </dev/null >/dev/null 2>&1 &
 fi
 SAY_PID=$!
-printf '%s\n' "$SAY_PID" >"$PID_FILE"
+write_state "$PID_FILE" "$SAY_PID"
 disown 2>/dev/null || true
 exit 0
