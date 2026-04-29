@@ -89,13 +89,15 @@ pick_voice() {
     # Names can contain single spaces (e.g. "Bad News", "Eddy (English (US))").
     # macOS ships with bash 3.2 which has flaky `{n,}` quantifier support in
     # `[[ =~ ]]` regex, so we parse with awk anchored on the locale code.
+    # Explicit indexing — bash 3.2 (default on macOS) has subtle bugs with
+    # `arr+=()` that can leave NAMES[0] unset; index assignment is reliable.
     while IFS=$'\t' read -r nm lc sm; do
         [[ -z "$nm" ]] && continue
-        NAMES+=("$nm")
-        LANGS+=("$lc")
-        SAMPLES+=("$sm")
+        NAMES[idx]="$nm"
+        LANGS[idx]="$lc"
+        SAMPLES[idx]="$sm"
         [[ "$nm" == "Samantha" && "$lc" == "en_US" ]] && samantha_idx=$idx
-        ((idx++))
+        idx=$((idx + 1))
     done < <(say -v '?' 2>/dev/null | awk '
         match($0, /[a-z][a-z]_[A-Z][A-Z]/) {
             name = substr($0, 1, RSTART - 1)
