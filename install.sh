@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+CLAUDESAY_VERSION="0.3.0"
+
 REPO_RAW="${CLAUDESAY_RAW:-https://raw.githubusercontent.com/abryfs/claudesay/main}"
 HOOKS_DIR="$HOME/.claude/hooks"
 SCRIPT_PATH="$HOOKS_DIR/claudesay.sh"
@@ -19,12 +21,18 @@ for arg in "$@"; do
     case "$arg" in
         --voice=*)     FLAG_VOICE="${arg#--voice=}" ;;
         --no-picker)   FLAG_NO_PICKER=1 ;;
+        --version|-V)
+            echo "claudesay $CLAUDESAY_VERSION"
+            exit 0 ;;
         -h|--help)
-            cat <<'USAGE'
-claudesay installer
+            cat <<USAGE
+claudesay $CLAUDESAY_VERSION — installer
+
   ./install.sh                       # interactive voice picker
   ./install.sh --voice=Daniel        # skip picker, set voice
   ./install.sh --no-picker           # skip picker, default Samantha
+  ./install.sh --version, -V         # print version and exit
+  ./install.sh --help, -h            # this message
   CLAUDESAY_VOICE=Karen ./install.sh # env equivalent of --voice
 USAGE
             exit 0 ;;

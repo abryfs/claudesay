@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tool versions
+        run: |
+          /bin/bash --version | head -1
+          jq --version
+          which say
+          uname -a
+
+      - name: Syntax check
+        run: |
+          /bin/bash -n claudesay.sh
+          /bin/bash -n install.sh
+          /bin/bash -n uninstall.sh
+          /bin/bash -n tests.sh
+
+      - name: Run test suite
+        run: /bin/bash tests.sh
+
+      - name: Verify --version reports a value
+        run: |
+          ver=$(/bin/bash claudesay.sh --version | awk '{print $2}')
+          test -n "$ver"
+          echo "claudesay reports version: $ver"

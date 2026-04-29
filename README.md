@@ -1,5 +1,10 @@
 # claudesay
 
+[![tests](https://github.com/abryfs/claudesay/actions/workflows/test.yml/badge.svg)](https://github.com/abryfs/claudesay/actions/workflows/test.yml)
+[![version](https://img.shields.io/github/v/tag/abryfs/claudesay?label=version)](https://github.com/abryfs/claudesay/releases)
+[![license](https://img.shields.io/github/license/abryfs/claudesay)](LICENSE)
+![macOS](https://img.shields.io/badge/macOS-only-blue)
+
 **Tasteful voice notifications for Claude Code.** A single bash hook that speaks the meaningful end of Claude's reply when a turn finishes — and stays silent the rest of the time. Pure macOS `say`. No API keys, no daemon, no per-call cost.
 
 ## Install
@@ -39,6 +44,28 @@ git clone https://github.com/abryfs/claudesay && cd claudesay && ./install.sh
 ```
 
 Open a new Claude Code session. Ask something. When the response ends, you'll hear the last sentence.
+
+### Verify it's working
+
+```bash
+~/.claude/hooks/claudesay.sh --test     # speaks a fixed sentence in your voice
+~/.claude/hooks/claudesay.sh --version  # prints version
+```
+
+---
+
+## Demo
+
+The voice picker (recorded with [`asciinema`](https://asciinema.org)):
+
+> *(recording placeholder — `asciinema rec demo.cast` while running `bash install.sh`, then `asciinema upload demo.cast`)*
+
+To record your own, with audio:
+
+```bash
+brew install asciinema
+asciinema rec --command="bash install.sh" demo.cast
+```
 
 ---
 
@@ -103,6 +130,8 @@ Set env vars in `~/.claude/settings.json` (or your shell):
 | `CLAUDESAY_MAX` | `220` | Truncate spoken text to this many chars. |
 | `CLAUDESAY_RATE` | system | `say -r` words/min. Try `200`–`260` for snappier reads. |
 | `CLAUDESAY_DISABLE` | unset | Set to anything to silence without uninstalling. |
+| `CLAUDESAY_DEBUG` | unset | Set to anything to print every decision the hook makes to stderr (handy for "why didn't it speak?"). |
+| `CLAUDESAY_STATE` | per-user `$TMPDIR` | Override the state directory location. |
 
 Example settings.json snippet:
 

@@ -19,7 +19,47 @@
 
 set -u
 
+CLAUDESAY_VERSION="0.3.0"
+
+# CLI flags. The hook is normally invoked with stdin JSON and no args,
+# but --version / --test let users sanity-check the install without
+# waiting for a real Claude Code turn.
+case "${1:-}" in
+    --version|-V)
+        echo "claudesay $CLAUDESAY_VERSION"
+        exit 0 ;;
+    --test)
+        # Speak a fixed sentence, bypassing transcript parsing entirely.
+        VOICE="${CLAUDESAY_VOICE:-Samantha}"
+        [[ "${VOICE:0:1}" == "-" ]] && VOICE="Samantha"
+        say -v "$VOICE" "Claudesay is wired correctly." </dev/null >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+        echo "claudesay: spoke a test sentence using voice '$VOICE'"
+        exit 0 ;;
+    --help|-h)
+        cat <<USAGE
+claudesay $CLAUDESAY_VERSION — Stop hook for Claude Code
+
+Normal usage is invocation by Claude Code with stdin JSON. CLI helpers:
+  --version, -V    Print version and exit
+  --test           Speak a test sentence and exit
+  --help, -h       This message
+
+See ~/.claude/settings.json for hook wiring; see env vars at the top of
+$0 for tuning (CLAUDESAY_VOICE, CLAUDESAY_DEBOUNCE, CLAUDESAY_DEBUG, …).
+USAGE
+        exit 0 ;;
+esac
+
 [[ -n "${CLAUDESAY_DISABLE:-}" ]] && exit 0
+
+# Optional verbose tracing — set CLAUDESAY_DEBUG=1 (or in settings.json env)
+# to log every decision the hook makes. Helps diagnose "why didn't it speak?"
+if [[ -n "${CLAUDESAY_DEBUG:-}" ]]; then
+    debug() { printf 'claudesay: %s\n' "$*" >&2; }
+else
+    debug() { :; }
+fi
 
 VOICE="${CLAUDESAY_VOICE:-Samantha}"
 DEBOUNCE_SEC="${CLAUDESAY_DEBOUNCE:-4}"
@@ -56,12 +96,16 @@ INPUT=$(cat)
 
 # Loop guard — Stop can fire again if a previous hook forced continuation.
 if [[ "$(jq -r '.stop_hook_active // false' <<<"$INPUT" 2>/dev/null)" == "true" ]]; then
+    debug "skip: stop_hook_active=true (avoiding loop)"
     exit 0
 fi
 
 TRANSCRIPT=$(jq -r '.transcript_path // empty' <<<"$INPUT" 2>/dev/null)
 SESSION_ID=$(jq -r '.session_id // empty' <<<"$INPUT" 2>/dev/null)
-[[ -z "$TRANSCRIPT" || ! -f "$TRANSCRIPT" ]] && exit 0
+if [[ -z "$TRANSCRIPT" || ! -f "$TRANSCRIPT" ]]; then
+    debug "skip: missing or unreadable transcript_path ($TRANSCRIPT)"
+    exit 0
+fi
 
 # Sanitize session_id for use as a filename component.
 SAFE_KEY=$(printf '%s' "${SESSION_ID:-default}" | tr -c 'A-Za-z0-9._-' '_')
@@ -94,13 +138,17 @@ write_state() {
 # variables in `$(( … ))`, so a planted `LAST_AT='a[$(id)]'` could execute.
 NOW=$(date +%s)
 LAST_AT=""
+# `$(<file)` is bash's no-fork "fast read"; appending `2>/dev/null` would
+# break the special form and return empty, so the `-f && ! -L` check
+# above is what guards the read.
 if [[ -f "$LAST_FILE" && ! -L "$LAST_FILE" ]]; then
-    LAST_AT=$(<"$LAST_FILE" 2>/dev/null)
+    LAST_AT=$(<"$LAST_FILE")
 fi
 if [[ ! "$LAST_AT" =~ ^[0-9]+$ ]]; then
     LAST_AT=""
 fi
 if [[ -n "$LAST_AT" && $((NOW - LAST_AT)) -lt $DEBOUNCE_SEC ]]; then
+    debug "skip: debounced (last fire $((NOW - LAST_AT))s ago, threshold ${DEBOUNCE_SEC}s)"
     exit 0
 fi
 write_state "$LAST_FILE" "$NOW"
@@ -122,8 +170,14 @@ MSG=$(jq -s -r '
     ] | last // ""
 ' "$TRANSCRIPT" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
 
-[[ -z "$MSG" || "$MSG" == "null" ]] && exit 0
-[[ ${#MSG} -lt $MIN_LEN ]] && exit 0
+if [[ -z "$MSG" || "$MSG" == "null" ]]; then
+    debug "skip: no text-bearing assistant message (tool-use only?)"
+    exit 0
+fi
+if [[ ${#MSG} -lt $MIN_LEN ]]; then
+    debug "skip: too short (${#MSG} < $MIN_LEN chars): ${MSG:0:60}"
+    exit 0
+fi
 
 # Filter mid-pipeline filler. A long message starting with "Now" is
 # probably a real summary — only filter if the message is short AND
@@ -142,6 +196,7 @@ if [[ ${#MSG} -lt 120 ]]; then
         "trying "*|"testing "*|\
         "one moment"*|"hold on"*|"hmm"*|"ok "*|"ok,"*|"sure"*|"got it"*|\
         "done"*|"got "*|"yep"*|"yes"*|"no,"*|"actually"*)
+            debug "skip: filler (\"${MSG:0:40}…\")"
             exit 0
             ;;
     esac
@@ -161,9 +216,10 @@ hash_string() {
 HASH=$(hash_string "$MSG")
 EXISTING_HASH=""
 if [[ -f "$HASH_FILE" && ! -L "$HASH_FILE" ]]; then
-    EXISTING_HASH=$(<"$HASH_FILE" 2>/dev/null)
+    EXISTING_HASH=$(<"$HASH_FILE")
 fi
 if [[ "$EXISTING_HASH" == "$HASH" ]]; then
+    debug "skip: deduped (same content as previous fire)"
     exit 0
 fi
 write_state "$HASH_FILE" "$HASH"
@@ -212,7 +268,7 @@ SPEAK=$(printf '%s' "$SPEAK" | sed -E '
 # process before sending SIGTERM: macOS PIDs recycle, and we don't want
 # to kill an unrelated process that happens to have inherited the PID.
 if [[ -f "$PID_FILE" && ! -L "$PID_FILE" ]]; then
-    OLD_PID=$(<"$PID_FILE" 2>/dev/null)
+    OLD_PID=$(<"$PID_FILE")
     if [[ "$OLD_PID" =~ ^[0-9]+$ ]]; then
         OLD_COMM=$(ps -p "$OLD_PID" -o comm= 2>/dev/null)
         OLD_COMM="${OLD_COMM##*/}"
@@ -223,6 +279,8 @@ if [[ -f "$PID_FILE" && ! -L "$PID_FILE" ]]; then
         fi
     fi
 fi
+
+debug "speak: voice=$VOICE rate=${RATE:-default} text=\"${SPEAK:0:80}\""
 
 if [[ -n "$RATE" ]]; then
     say -r "$RATE" -v "$VOICE" "$SPEAK" </dev/null >/dev/null 2>&1 &
