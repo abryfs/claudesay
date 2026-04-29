@@ -86,22 +86,30 @@ pick_voice() {
     local samantha_idx=0 idx=0
     # `say -v '?'` separates name and locale by 2+ spaces, e.g.:
     #   Samantha            en_US    # Hello! My name is Samantha.
-    # Names can contain single spaces (e.g. "Bad News", "Eddy (English (US))"),
-    # so we anchor on the run of 2+ spaces, not single whitespace.
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^(.+)[[:space:]]{2,}([a-z]{2}_[A-Z]{2})[[:space:]]+#[[:space:]]*(.*)$ ]]; then
-            local nm="${BASH_REMATCH[1]}"
-            local lc="${BASH_REMATCH[2]}"
-            local sm="${BASH_REMATCH[3]}"
-            # Trim trailing whitespace from name
-            nm="${nm%"${nm##*[![:space:]]}"}"
-            NAMES+=("$nm")
-            LANGS+=("$lc")
-            SAMPLES+=("$sm")
-            [[ "$nm" == "Samantha" && "$lc" == "en_US" ]] && samantha_idx=$idx
-            ((idx++))
-        fi
-    done < <(say -v '?' 2>/dev/null | grep -E "en_(US|GB|AU|IE|IN|ZA)")
+    # Names can contain single spaces (e.g. "Bad News", "Eddy (English (US))").
+    # macOS ships with bash 3.2 which has flaky `{n,}` quantifier support in
+    # `[[ =~ ]]` regex, so we parse with awk anchored on the locale code.
+    while IFS=$'\t' read -r nm lc sm; do
+        [[ -z "$nm" ]] && continue
+        NAMES+=("$nm")
+        LANGS+=("$lc")
+        SAMPLES+=("$sm")
+        [[ "$nm" == "Samantha" && "$lc" == "en_US" ]] && samantha_idx=$idx
+        ((idx++))
+    done < <(say -v '?' 2>/dev/null | awk '
+        match($0, /[a-z][a-z]_[A-Z][A-Z]/) {
+            name = substr($0, 1, RSTART - 1)
+            sub(/[[:space:]]+$/, "", name)
+            sub(/^[[:space:]]+/, "", name)
+            locale = substr($0, RSTART, RLENGTH)
+            rest = substr($0, RSTART + RLENGTH)
+            sub(/^[[:space:]]+/, "", rest)
+            sub(/^#[[:space:]]*/, "", rest)
+            if (locale ~ /^en_(US|GB|AU|IE|IN|ZA)$/) {
+                print name "\t" locale "\t" rest
+            }
+        }
+    ')
 
     local n=${#NAMES[@]}
     if [[ $n -eq 0 ]]; then
