@@ -1,0 +1,23 @@
+install.sh
+  36de6367baeb7445 89-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "9f90ed3c8b33261d684b22fe96037428ad48f0db",
+  "prompts": {
+    "36de6367baeb7445": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b5480403-a3cc-4ae5-86c8-b757b1a3cfc9",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "abryfs",
+      "messages": [],
+      "total_additions": 24,
+      "total_deletions": 16,
+      "accepted_lines": 24,
+      "overriden_lines": 0
+    }
+  }
+}
