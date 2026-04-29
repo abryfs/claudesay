@@ -48,10 +48,11 @@ Claude Code 2.1 still ships **no native TTS** ([feature request #50720](https://
 
 claudesay is the smallest thing that actually works:
 
-- **~140 lines of bash.** Read it. Audit it. Modify it.
+- **The core hook is ~170 lines of bash.** Read it. Audit it. Modify it.
 - **macOS built-ins only** — `say` + `jq`. Zero install footprint.
 - **Quiet by default.** It doesn't speak unless Claude said something worth hearing.
 - **$0/month forever.** No subscription, no key, no quota.
+- **Security-conscious:** validates `$VOICE` argv to prevent flag injection, scopes state to a private per-user dir under `$TMPDIR` (not world-writable `/tmp`), refuses to follow symlinked state files, atomic-renames `settings.json` so you can't end up with a half-written config.
 
 ## What it speaks (and what it doesn't)
 
@@ -116,20 +117,24 @@ Example settings.json snippet:
 
 ## How it's wired
 
-The installer adds a `Stop` hook entry in `~/.claude/settings.json`:
+The installer adds a `Stop` hook entry in `~/.claude/settings.json`. **Use absolute paths** — Claude Code does not tilde-expand `command`:
 
 ```json
 {
   "hooks": {
     "Stop": [{
       "matcher": "*",
-      "hooks": [{ "type": "command", "command": "~/.claude/hooks/claudesay.sh" }]
+      "hooks": [{
+        "type": "command",
+        "command": "/Users/<you>/.claude/hooks/claudesay.sh",
+        "timeout": 15
+      }]
     }]
   }
 }
 ```
 
-`Stop` fires when Claude finishes a turn. The script reads the transcript path from stdin, pulls the last text-bearing assistant message, and decides whether to speak it.
+`Stop` fires when Claude finishes a turn. The script reads the transcript path from stdin, pulls the last text-bearing assistant message, and decides whether to speak it. The `timeout: 15` is a safety floor in case `say` ever blocks; the hook itself returns in well under a second.
 
 ## Manual install (no script)
 
@@ -150,17 +155,34 @@ Then add the Stop hook block above to `~/.claude/settings.json`.
 
 Or remove the Stop hook block from `~/.claude/settings.json` and delete `~/.claude/hooks/claudesay.sh`.
 
+## If something goes wrong
+
+The installer always writes a timestamped backup before touching `settings.json`. Find it and restore:
+
+```bash
+ls -t ~/.claude/settings.json.bak.* | head -1     # most recent backup
+cp "$(ls -t ~/.claude/settings.json.bak.* | head -1)" ~/.claude/settings.json
+```
+
+If the picker exited badly and your terminal looks stuck (no cursor, no echo):
+
+```bash
+stty sane && tput cnorm
+```
+
+The installer refuses to touch a `settings.json` that isn't valid JSON. If that happens, the file is left untouched and you'll see exactly which file to fix.
+
 ## How it filters noise
 
 Three independent guards stack:
 
 1. **`stop_hook_active` loop guard** — if a previous hook forced Claude to continue, skip; otherwise we'd narrate the loop.
 2. **Per-session debounce** — collapses Stop events that fire within `DEBOUNCE_SEC` of each other (the typical "task in the middle finished" case).
-3. **Filler heuristic** — short messages (<120 chars) starting with `Let me`, `I'll`, `Now`, `Running`, `Reading`, `Checking`, `OK`, `Done`, etc. are treated as transitional and skipped.
+3. **Filler heuristic** — short messages (<120 chars) starting with `Let me`, `I'll`, `Now`, `Running`, `Reading`, `Checking`, `OK`, `Done`, etc. (smart-quote variants included) are treated as transitional and skipped.
 
-Then it dedupes on a content hash, strips markdown so `say` doesn't read literal asterisks, and speaks the last sentence ≥15 chars (where summaries and questions land).
+Then it dedupes on a content hash, strips markdown + ANSI escapes so `say` doesn't read literal asterisks or color codes, and speaks the last sentence ≥15 chars (where summaries and questions land).
 
-State lives in `/tmp/claudesay/<session_id>.{last,hash}`. Wiped on reboot. Override with `CLAUDESAY_STATE`.
+State lives in `${TMPDIR}/claudesay-<uid>/<session_id>.{last,hash,pid}` with mode `0700`. Wiped on reboot. Override with `CLAUDESAY_STATE`. Barge-in is PID-tracked per session — interrupting your speech doesn't kill `say` invocations from other apps or other Claude sessions.
 
 ## Why not [other thing]
 

@@ -8,6 +8,7 @@ REPO_RAW="${CLAUDESAY_RAW:-https://raw.githubusercontent.com/abryfs/claudesay/ma
 HOOKS_DIR="$HOME/.claude/hooks"
 SCRIPT_PATH="$HOOKS_DIR/claudesay.sh"
 SETTINGS="$HOME/.claude/settings.json"
+HOOK_TIMEOUT_SEC=15
 
 # Flags. --voice=<name> skips the picker (handy for non-TTY installs
 # like `claude code` agents driving the install). --no-picker uses the
@@ -42,8 +43,16 @@ command -v say >/dev/null 2>&1 || { echo "say not found — not on macOS?" >&2; 
 mkdir -p "$HOOKS_DIR"
 
 # ─── 1. Install the hook script ──────────────────────────────────────────────
-if [[ -f "$(dirname "$0")/claudesay.sh" ]]; then
-    cp "$(dirname "$0")/claudesay.sh" "$SCRIPT_PATH"
+# Prefer a sibling claudesay.sh from the repo checkout; fall back to curl
+# when running via `curl … | bash`. Use BASH_SOURCE rather than $0 because
+# under pipe-to-bash $0 is the literal string "bash" and dirname yields ".".
+SELF_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "bash" ]]; then
+    SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+fi
+
+if [[ -n "$SELF_DIR" && -f "$SELF_DIR/claudesay.sh" ]]; then
+    cp "$SELF_DIR/claudesay.sh" "$SCRIPT_PATH"
 else
     curl -fsSL "$REPO_RAW/claudesay.sh" -o "$SCRIPT_PATH"
 fi
@@ -52,10 +61,8 @@ echo "✓ installed $SCRIPT_PATH"
 
 # ─── 2. Pick a voice (interactive arrow-key TUI with live preview) ───────────
 SELECTED_VOICE=""
-SELECTED_RATE=""
 
 pick_voice() {
-    # Honor a pre-set env override (skip the picker entirely)
     if [[ -n "${CLAUDESAY_VOICE:-}" ]]; then
         SELECTED_VOICE="$CLAUDESAY_VOICE"
         echo "✓ using preset CLAUDESAY_VOICE=$SELECTED_VOICE"
@@ -68,7 +75,7 @@ pick_voice() {
     fi
 
     # The picker reads keystrokes from stdin. If we were piped (curl|bash),
-    # stdin is the script — reattach to /dev/tty so the user can drive it.
+    # stdin is the script text — reattach to /dev/tty so the user can drive it.
     if [[ ! -t 0 ]]; then
         if [[ -r /dev/tty ]]; then
             exec </dev/tty
@@ -81,16 +88,11 @@ pick_voice() {
 
     # Parse `say -v '?'`. Format is fixed-column:
     #   Samantha            en_US    # Hello! My name is Samantha.
-    # Voice names can include spaces and parens, so we anchor on the locale.
+    # macOS bash 3.2 has flaky `{n,}` support inside `[[ =~ ]]`, so we anchor
+    # on the locale code via awk and use explicit array indexing (bash 3.2's
+    # `arr+=()` can leave NAMES[0] unset).
     local NAMES=() LANGS=() SAMPLES=()
     local samantha_idx=0 idx=0
-    # `say -v '?'` separates name and locale by 2+ spaces, e.g.:
-    #   Samantha            en_US    # Hello! My name is Samantha.
-    # Names can contain single spaces (e.g. "Bad News", "Eddy (English (US))").
-    # macOS ships with bash 3.2 which has flaky `{n,}` quantifier support in
-    # `[[ =~ ]]` regex, so we parse with awk anchored on the locale code.
-    # Explicit indexing — bash 3.2 (default on macOS) has subtle bugs with
-    # `arr+=()` that can leave NAMES[0] unset; index assignment is reliable.
     while IFS=$'\t' read -r nm lc sm; do
         [[ -z "$nm" ]] && continue
         NAMES[idx]="$nm"
@@ -101,15 +103,11 @@ pick_voice() {
     done < <(say -v '?' 2>/dev/null | awk '
         match($0, /[a-z][a-z]_[A-Z][A-Z]/) {
             name = substr($0, 1, RSTART - 1)
-            sub(/[[:space:]]+$/, "", name)
-            sub(/^[[:space:]]+/, "", name)
+            sub(/[[:space:]]+$/, "", name); sub(/^[[:space:]]+/, "", name)
             locale = substr($0, RSTART, RLENGTH)
             rest = substr($0, RSTART + RLENGTH)
-            sub(/^[[:space:]]+/, "", rest)
-            sub(/^#[[:space:]]*/, "", rest)
-            if (locale ~ /^en_(US|GB|AU|IE|IN|ZA)$/) {
-                print name "\t" locale "\t" rest
-            }
+            sub(/^[[:space:]]+/, "", rest); sub(/^#[[:space:]]*/, "", rest)
+            if (locale ~ /^en_(US|GB|AU|IE|IN|ZA)$/) print name "\t" locale "\t" rest
         }
     ')
 
@@ -119,7 +117,6 @@ pick_voice() {
         return 0
     fi
 
-    # Viewport setup
     local term_rows; term_rows=$(tput lines 2>/dev/null || echo 24)
     local rows=$((term_rows - 10))
     [[ $rows -lt 6 ]] && rows=6
@@ -127,26 +124,31 @@ pick_voice() {
 
     local cursor=$samantha_idx
     local viewport_start=0
-    if [[ $cursor -ge $rows ]]; then
-        viewport_start=$((cursor - rows + 1))
-    fi
+    [[ $cursor -ge $rows ]] && viewport_start=$((cursor - rows + 1))
 
     local last_previewed=""
+    local preview_pid=""
 
     cleanup() {
         tput cnorm 2>/dev/null || true
-        killall say 2>/dev/null || true
         stty echo 2>/dev/null || true
+        if [[ -n "$preview_pid" ]]; then
+            kill "$preview_pid" 2>/dev/null || true
+        fi
     }
-    trap 'cleanup; exit 130' INT TERM
+    # Run cleanup on any normal exit AND on every fatal signal we can trap.
+    # Without EXIT, an early `read` failure (broken TTY, terminal close)
+    # would leave the cursor hidden and stty in -echo state.
+    trap 'cleanup' EXIT
+    trap 'cleanup; exit 130' INT TERM HUP QUIT
 
-    tput civis 2>/dev/null || true   # hide cursor
-    stty -echo 2>/dev/null || true   # don't echo keystrokes
+    tput civis 2>/dev/null || true
+    stty -echo 2>/dev/null || true
 
     redraw() {
         clear
         printf '\n  \033[1mPick a voice for claudesay\033[0m\n'
-        printf '  \033[2m↑↓ navigate (auto-preview)   ⏎ select   r replay   a all/english   q default\033[0m\n\n'
+        printf '  \033[2m↑↓ navigate (auto-preview)   ⏎ select   r replay   q default\033[0m\n\n'
         local end=$((viewport_start + rows))
         [[ $end -gt $n ]] && end=$n
         local i
@@ -163,11 +165,15 @@ pick_voice() {
 
     preview() {
         local force="${1:-}"
-        if [[ "$force" == "force" || "${NAMES[cursor]}" != "$last_previewed" ]]; then
-            killall say 2>/dev/null || true
-            ( say -v "${NAMES[cursor]}" "${SAMPLES[cursor]}" >/dev/null 2>&1 & ) 2>/dev/null
-            last_previewed="${NAMES[cursor]}"
+        if [[ "$force" != "force" && "${NAMES[cursor]}" == "$last_previewed" ]]; then
+            return
         fi
+        if [[ -n "$preview_pid" ]]; then
+            kill "$preview_pid" 2>/dev/null || true
+        fi
+        say -v "${NAMES[cursor]}" "${SAMPLES[cursor]}" </dev/null >/dev/null 2>&1 &
+        preview_pid=$!
+        last_previewed="${NAMES[cursor]}"
     }
 
     redraw
@@ -177,28 +183,28 @@ pick_voice() {
     while true; do
         IFS= read -rsn1 key || break
         case "$key" in
-            $'\x1b')  # escape sequence (arrow keys)
+            $'\x1b')
                 IFS= read -rsn2 -t 0.05 rest || rest=""
                 case "$rest" in
-                    '[A')  # up
+                    '[A')
                         if [[ $cursor -gt 0 ]]; then
-                            ((cursor--))
+                            cursor=$((cursor - 1))
                             [[ $cursor -lt $viewport_start ]] && viewport_start=$cursor
                             redraw; preview
                         fi ;;
-                    '[B')  # down
+                    '[B')
                         if [[ $cursor -lt $((n - 1)) ]]; then
-                            ((cursor++))
+                            cursor=$((cursor + 1))
                             [[ $cursor -ge $((viewport_start + rows)) ]] && viewport_start=$((cursor - rows + 1))
                             redraw; preview
                         fi ;;
-                    '[5')  # page up (consume the trailing ~)
+                    '[5')
                         IFS= read -rsn1 -t 0.01 _ || true
                         cursor=$((cursor - rows))
                         [[ $cursor -lt 0 ]] && cursor=0
                         viewport_start=$cursor
                         redraw; preview ;;
-                    '[6')  # page down
+                    '[6')
                         IFS= read -rsn1 -t 0.01 _ || true
                         cursor=$((cursor + rows))
                         [[ $cursor -ge $n ]] && cursor=$((n - 1))
@@ -206,19 +212,19 @@ pick_voice() {
                         [[ $viewport_start -lt 0 ]] && viewport_start=0
                         redraw; preview ;;
                 esac ;;
-            ''|$'\n')  # enter
-                killall say 2>/dev/null || true
+            ''|$'\n')
                 SELECTED_VOICE="${NAMES[cursor]}"
                 break ;;
-            'r'|'R')   # replay current
+            'r'|'R')
                 preview force ;;
-            'q'|'Q')   # quit → use default
-                killall say 2>/dev/null || true
+            'q'|'Q')
                 SELECTED_VOICE="Samantha"
                 break ;;
         esac
     done
 
+    # cleanup runs via EXIT trap; clear it now so the success print is visible.
+    trap - EXIT
     cleanup
     clear
     echo "✓ voice: $SELECTED_VOICE"
@@ -226,21 +232,43 @@ pick_voice() {
 
 pick_voice
 
+# Defensive: if the picker somehow returned without setting a voice, default.
+if [[ -z "$SELECTED_VOICE" ]]; then
+    SELECTED_VOICE="Samantha"
+fi
+
 # ─── 3. Wire the Stop hook in settings.json ──────────────────────────────────
 if [[ ! -f "$SETTINGS" ]]; then
-    echo '{}' > "$SETTINGS"
+    echo '{}' >"$SETTINGS"
 fi
+
+# Validate existing JSON before touching it.
+if ! jq -e . "$SETTINGS" >/dev/null 2>&1; then
+    echo "⚠ $SETTINGS is not valid JSON — leaving it alone." >&2
+    echo "  Fix the file or move it aside, then re-run install.sh." >&2
+    exit 1
+fi
+
 cp "$SETTINGS" "$SETTINGS.bak.$(date +%s)"
 
-# Self-healing: strip prior claudesay/voice-notify Stop entries, then add ours.
-# Also persist the chosen voice into .env (merged, doesn't disturb other keys).
-TMP=$(mktemp)
-jq --arg p "$SCRIPT_PATH" --arg v "$SELECTED_VOICE" '
+# Atomic update: mktemp in the SAME directory so `mv` is rename(2).
+# Falling back to a cross-device mv risks a truncated settings.json mid-copy
+# if the disk fills up — we don't want to brick Claude Code.
+TMP=$(mktemp "$SETTINGS.tmp.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+
+# Self-healing: strip prior claudesay/voice-notify Stop entries, then add the
+# canonical one. Type-coerce .hooks.Stop in case the user's existing config
+# has it as an object — without coercion jq would error and `set -e` would
+# abort mid-install with the hook script copied but settings unwired.
+if ! jq --arg p "$SCRIPT_PATH" \
+        --arg v "$SELECTED_VOICE" \
+        --argjson t "$HOOK_TIMEOUT_SEC" '
     .env //= {}
     | (if $v != "" and $v != "Samantha" then .env.CLAUDESAY_VOICE = $v else . end)
     | .hooks //= {}
     | .hooks.Stop = (
-        (.hooks.Stop // [])
+        ( if (.hooks.Stop | type) == "array" then .hooks.Stop else [] end )
         | map(
             .hooks = ((.hooks // []) | map(select(
                 ((.command // "") | test("claudesay\\.sh|voice-notify\\.sh")) | not
@@ -250,10 +278,16 @@ jq --arg p "$SCRIPT_PATH" --arg v "$SELECTED_VOICE" '
       )
     | .hooks.Stop += [{
         "matcher": "*",
-        "hooks": [{ "type": "command", "command": $p }]
+        "hooks": [{ "type": "command", "command": $p, "timeout": $t }]
       }]
-' "$SETTINGS" > "$TMP"
+' "$SETTINGS" >"$TMP"; then
+    echo "⚠ jq failed to update $SETTINGS." >&2
+    echo "  Backup is at $SETTINGS.bak.*" >&2
+    exit 1
+fi
+
 mv "$TMP" "$SETTINGS"
+trap - EXIT
 echo "✓ wired Stop hook into $SETTINGS (backup at $SETTINGS.bak.*)"
 
 cat <<EOF
