@@ -1,0 +1,29 @@
+AGENTS.md
+  s_f012f4a76d99dc::t_2ae5dbfc88baab 26,36
+CHANGELOG.md
+  s_f012f4a76d99dc::t_dda9ffa06b59a3 7-24
+README.md
+  s_f012f4a76d99dc::t_9d0a594db2885d 105,107,109
+claudesay-hotkey.swift
+  s_f012f4a76d99dc::t_93e9edf680f760 3,28-29
+claudesay.sh
+  s_f012f4a76d99dc::t_e45b2f21ba8a3a 40
+install.sh
+  s_f012f4a76d99dc::t_1d4186a1d4e7c7 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "4dfb4228e21daa3fb7cc5e86bf86d63792384d4a",
+  "prompts": {},
+  "sessions": {
+    "s_f012f4a76d99dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9af724f0-d713-4e0b-be87-32ebbde2ed86",
+        "model": "claude-opus-5"
+      },
+      "human_author": "abryfs <69842068+abryfs@users.noreply.github.com>"
+    }
+  }
+}
