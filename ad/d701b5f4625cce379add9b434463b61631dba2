@@ -1,0 +1,65 @@
+claudesay-voice.py
+  s_f012f4a76d99dc::t_8d7b187d1a9f97 1-82,95-141,153-154,162,166-195,197-207
+  s_f012f4a76d99dc::t_780eb785ff27f2 196
+  s_f012f4a76d99dc::t_551e236f59eef8 83-94
+  s_f012f4a76d99dc::t_ca78dd50a92a66 142-152,155-161,163-165
+install.sh
+  s_f012f4a76d99dc::t_67566adaa2e2fe 12
+  s_f012f4a76d99dc::t_2840905452525c 80-95
+  s_f012f4a76d99dc::t_8a31ce181726a5 7
+claudesay.sh
+  s_f012f4a76d99dc::t_f640d2bdfa42c4 252
+  s_f012f4a76d99dc::t_7df3c5ec19d83f 397-400,408,414,417
+  s_f012f4a76d99dc::t_c06f30dff2a7fc 159-164
+  s_f012f4a76d99dc::t_0bc3f8b42513ed 119-121,127-158,165-224
+  s_f012f4a76d99dc::t_11239d22ad45b9 416
+  s_f012f4a76d99dc::t_125d7534560da3 34-37
+  s_f012f4a76d99dc::t_9cfb45af3ba77d 47-49,56,59-61,67
+  s_f012f4a76d99dc::t_d21adb919594be 8-15,25-30
+  s_f012f4a76d99dc::t_eebd17ab9b2308 97-111
+  s_f012f4a76d99dc::t_92711af7670b4c 324
+  s_f012f4a76d99dc::t_ab07e45d7d312f 225
+tests.sh
+  s_f012f4a76d99dc::t_8e8565042309a2 313-326,328,332-336
+  s_f012f4a76d99dc::t_7b68b2a209f32d 216-222,235-236,238-278,282-312,327,329-331,337-342,344-345,353-354,358,364-388,409-415,422-441
+  s_f012f4a76d99dc::t_14eb95fefd30d0 223-234
+  s_f012f4a76d99dc::t_c7140f6c5bf890 416-421
+  s_f012f4a76d99dc::t_da9533028494b6 558-567
+  s_f012f4a76d99dc::t_aab1b9e461f418 389-408
+  s_f012f4a76d99dc::t_1a6cf4a24c0790 11
+  s_f012f4a76d99dc::t_869e5483ad8634 527-534
+  s_f012f4a76d99dc::t_9c770998a62c83 486-510
+  s_f012f4a76d99dc::t_cdcda7c0888490 237
+  s_f012f4a76d99dc::t_da0b3091e50007 343,346-352,355-357,359-363
+  s_f012f4a76d99dc::t_670339829b06f3 572-573
+  s_f012f4a76d99dc::t_58ee48e9dcb7c5 279-281
+CHANGELOG.md
+  s_f012f4a76d99dc::t_a42c9206c10b4a 7-44
+uninstall.sh
+  s_f012f4a76d99dc::t_ad8c1fd04bbf51 8
+  s_f012f4a76d99dc::t_c61d98e23f1517 53-63
+README.md
+  s_f012f4a76d99dc::t_1ff8f3fce8bd25 8-10
+  s_f012f4a76d99dc::t_3727b5d6a43ea6 182-186
+  s_f012f4a76d99dc::t_639fc73925beec 98
+  s_f012f4a76d99dc::t_fa9fc1f80337f2 322-323,330,333
+  s_f012f4a76d99dc::t_08645afb59463c 80-81,83-84
+  s_f012f4a76d99dc::t_04a6faf80b729e 124-167
+  s_f012f4a76d99dc::t_5ccb781d2d152c 296-314
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "add701b5f4625cce379add9b434463b61631dba2",
+  "prompts": {},
+  "sessions": {
+    "s_f012f4a76d99dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9af724f0-d713-4e0b-be87-32ebbde2ed86",
+        "model": "claude-opus-5"
+      },
+      "human_author": "abryfs <69842068+abryfs@users.noreply.github.com>"
+    }
+  }
+}
