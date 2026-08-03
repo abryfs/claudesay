@@ -46,9 +46,12 @@ def load_font(size: int, weight: int | None = None) -> ImageFont.FreeTypeFont:
         if pathlib.Path(path).exists():
             font = ImageFont.truetype(path, size)
             if weight is not None:
-                try:  # DM Sans is variable; pin the optical weight when we can
+                # DM Sans is a variable font, so the weight axis can be pinned.
+                # A static fallback face (Helvetica) has no axes and raises —
+                # its single weight is then simply what we get.
+                try:
                     font.set_variation_by_axes([14.0, float(weight)])
-                except Exception:  # noqa: BLE001 - static face, nothing to pin
+                except OSError:
                     pass
             return font
     return ImageFont.load_default()
