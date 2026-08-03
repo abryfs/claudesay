@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-CLAUDESAY_VERSION="0.6.1"
+CLAUDESAY_VERSION="0.6.2"
 
 REPO_RAW="${CLAUDESAY_RAW:-https://raw.githubusercontent.com/abryfs/claudesay/main}"
 HOOKS_DIR="$HOME/.claude/hooks"

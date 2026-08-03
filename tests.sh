@@ -255,6 +255,79 @@ test_readme_example_selects_last_sentence() {
     return 0
 }
 
+# ─── Section: code is not speech ────────────────────────────────────────────
+# Claude Code renders inline code in violet because it is not prose, and read
+# aloud it costs you the sentence: `events.team_id` becomes "events dot team
+# eye dee". Each span should come out as the category of thing it is.
+spoken() {
+    # Echo back the text claudesay chose, so a test can assert on the words.
+    # Same isolation as fire_hook. Note the debug line truncates at 80 chars,
+    # so keep the expected sentence shorter than that.
+    local state jsonl
+    state=$(mktemp -d); jsonl=$(mktemp)
+    mk_jsonl "$1" >"$jsonl"
+    env -u CLAUDESAY_VOICE -u CLAUDESAY_RATE -u CLAUDESAY_DISABLE \
+        CLAUDESAY_STATE="$state" CLAUDESAY_DEBUG=1 CLAUDESAY_ENGINE=say \
+        CLAUDESAY_SILENT="$TEST_SILENT" CLAUDESAY_MUTE_WHEN_MIC=0 \
+        CLAUDESAY_MUTE_FILE=/nonexistent-mute \
+        bash "$HOOK" <<<"$(printf '{"transcript_path":"%s","session_id":"code","stop_hook_active":false}' "$jsonl")" 2>&1 \
+        | sed -n 's/.*text="\([^"]*\)".*/\1/p'
+    rm -f "$jsonl"; rm -rf "$state"
+}
+
+says() {
+    # says <expected speech> <assistant message>
+    local want="$1" msg="$2" got
+    got=$(spoken "$msg")
+    [[ "$got" == "$want" ]] || { echo "want: $want"; echo "got:  $got"; return 1; }
+}
+
+test_filename_becomes_the_file() {
+    says "The suite is green and the file is ready to run now." \
+         "The suite is green and \`deploy.sh\` is ready to run now."
+}
+
+test_command_becomes_that_command() {
+    says "Run that command to confirm it." \
+         "The suite is green. Run \`npm test -- --watch\` to confirm it."
+}
+
+test_env_var_becomes_that_setting() {
+    says "Speech is truncated, so set that setting to 300 for longer lines." \
+         "Speech is truncated, so set \`CLAUDESAY_MAX\` to 300 for longer lines."
+}
+
+test_identifier_is_not_spelled_out() {
+    local got; got=$(spoken "The parser is fixed and it reads \`transcript_path\` from stdin now.")
+    [[ "$got" == *transcript_path* ]] && { echo "spelled the identifier out: $got"; return 1; }
+    [[ "$got" == "The parser is fixed and it reads it from stdin now." ]] \
+        || { echo "got: $got"; return 1; }
+}
+
+test_no_doubled_article_before_a_noun() {
+    # "the `auth.ts` file" must not become "the the file file".
+    says "The bug is gone and the file was the culprit here." \
+         "The bug is gone and the \`auth.ts\` file was the culprit here."
+}
+
+test_plain_words_in_backticks_are_still_spoken() {
+    # Backticks around ordinary words are emphasis, not code. Say them.
+    says "The default is true and nothing else needs changing here." \
+         "The default is \`true\` and nothing else needs changing here."
+}
+
+test_fenced_block_is_never_spoken() {
+    local got; got=$(spoken 'The fix landed and here is the shape of it: ```echo hi``` and the suite passes.')
+    [[ "$got" == *"echo hi"* ]] && { echo "spoke the code block: $got"; return 1; }
+    return 0
+}
+
+test_bare_path_becomes_the_file() {
+    # Claude does not always reach for backticks; a path is a path either way.
+    says "Everything is wired now and the file passes cleanly." \
+         "Everything is wired now and src/hooks/claudesay.sh passes cleanly."
+}
+
 # ─── Section: playback queue + mute ─────────────────────────────────────────
 # Audible tests are OPT-IN. Running the suite must never take over the speakers:
 # it was written on a laptop that also joins meetings, and a test run once talked
@@ -873,6 +946,15 @@ run "voice starting with '-' is rejected"           test_voice_with_leading_dash
 run "installer rejects --voice=-foo"                test_installer_rejects_dash_voice
 
 run "README example speaks the last sentence"    test_readme_example_selects_last_sentence
+
+run "a filename is spoken as \"the file\""          test_filename_becomes_the_file
+run "a command is spoken as \"that command\""       test_command_becomes_that_command
+run "an env var is spoken as \"that setting\""      test_env_var_becomes_that_setting
+run "an identifier is never spelled out"          test_identifier_is_not_spelled_out
+run "no doubled article before a noun"            test_no_doubled_article_before_a_noun
+run "plain words in backticks are still spoken"   test_plain_words_in_backticks_are_still_spoken
+run "a fenced code block is never spoken"         test_fenced_block_is_never_spoken
+run "a bare path is spoken as \"the file\""         test_bare_path_becomes_the_file
 
 run "concurrent sessions never overlap"             test_concurrent_sessions_do_not_overlap
 run "queue lock is released after speech"           test_queue_lock_is_released_after_speech

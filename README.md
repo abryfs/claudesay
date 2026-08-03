@@ -73,11 +73,20 @@ you hear the bold part and nothing else. The rule is the last sentence, because 
 | Two Stops within 4s | silent (debounced) |
 | A tool-use-only turn | silent (no prose) |
 | You start typing | cut off |
+| "Fixed it in `auth.ts`." | "Fixed it in the file." |
+
+### Code doesn't get read out
+
+Claude Code renders inline code in violet because it isn't prose. It isn't speech either: said out loud, `events.team_id` becomes "events dot team eye dee" and you lose the rest of the sentence working out what you just heard.
+
+So claudesay says what kind of thing it is instead. `deploy.sh` is "the file", `npm test -- --watch` is "that command", `CLAUDESAY_MAX` is "that setting", `speak()` is "that function". Backticks around ordinary words survive untouched, since those are emphasis rather than code. The name is already on your screen. The sentence is for your ears.
 
 <details>
 <summary>How the filter works</summary>
 
 Four checks, cheapest first: the `stop_hook_active` loop guard, a per-session debounce, a filler heuristic for short messages opening with `Let me` / `I'll` / `Now` / `Checking` / `Done` and friends, then an md5 dedupe on the chosen text.
+
+Code substitution happens before all of those, so "too short", "filler" and "duplicate" are decided on the words you'd actually hear. Fenced blocks are dropped whole. Unbackticked paths and URLs get the same treatment, but only in shapes nothing else takes — `src/hooks/a.ts` and `https://…` yes, `and/or` and `e.g.` no.
 
 What survives loses its markdown and ANSI escapes, gets truncated to `CLAUDESAY_MAX`, and the last sentence of 15 characters or more is what gets spoken.
 
@@ -267,7 +276,7 @@ Linux and Windows ports welcome. See `claudesay.sh` for the contract and swap th
 ## Contributing
 
 ```bash
-./tests.sh                              # 48 tests, silent
+./tests.sh                              # 56 tests, silent
 CLAUDESAY_AUDIBLE_TESTS=1 ./tests.sh    # let it use the speakers
 ```
 

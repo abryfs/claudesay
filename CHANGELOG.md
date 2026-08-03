@@ -4,6 +4,24 @@ All notable changes to claudesay are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] — 2026-08-04
+
+### Changed
+- **Code isn't read out any more.** Inline code — the violet text in Claude
+  Code — is spoken as the category of thing it is: `deploy.sh` becomes "the
+  file", `npm test -- --watch` becomes "that command", `CLAUDESAY_MAX` becomes
+  "that setting", `speak()` becomes "that function". Before this the backticks
+  were stripped and the contents handed to `say`, so `events.team_id` came out
+  as "events dot team eye dee" and you spent the rest of the sentence working
+  out what you had just heard. Backticked ordinary words are still spoken as
+  written, since those are emphasis and not code. Unbackticked paths and URLs
+  get the same treatment, but only in shapes nothing else takes — `src/a.ts`
+  and `https://…` yes, `and/or` and `e.g.` no.
+- The substitution runs **before** the length, filler and dedupe checks, so all
+  three now judge the words you actually hear rather than the ones on screen.
+  Two replies differing only in a filename dedupe to one, which is right: they
+  sound the same.
+
 ## [0.6.1] — 2026-08-04
 
 ### Changed

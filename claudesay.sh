@@ -37,7 +37,7 @@
 
 set -u
 
-CLAUDESAY_VERSION="0.6.1"
+CLAUDESAY_VERSION="0.6.2"
 
 # Where this script lives — the optional voice server sits beside it.
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || SELF_DIR="."
@@ -526,6 +526,112 @@ if [[ -n "$LAST_AT" && $((NOW - LAST_AT)) -lt $DEBOUNCE_SEC ]]; then
 fi
 write_state "$LAST_FILE" "$NOW"
 
+# ─── Code is not speech ─────────────────────────────────────────────────────
+# Claude Code renders inline code in violet because it is not prose, and it
+# reads even worse than it looks: `events.team_id` comes out as "events dot
+# team eye dee", a path is a stream of slashes, and by the time it finishes you
+# have missed the sentence. So a code span becomes the *category* of thing it
+# is — the file, that command, that setting — which is what you would say out
+# loud anyway. The name is on your screen; the sentence is for your ears.
+#
+# This runs before the length, filler and dedupe checks on purpose. Those all
+# ask questions about what you are going to hear, so they should be asked of
+# the string you will actually hear.
+strip_code() {
+    awk '
+    BEGIN {
+        CMDS  = " npm yarn pnpm npx git bash sh zsh cd ls make cargo go rustc python python3 pip uv brew curl wget jq say node deno docker kubectl rm mv cp mkdir chmod chown sudo echo cat grep sed awk find ssh open swift swiftc xcodebuild pytest ruff eslint tsc terraform gh killall afplay shellcheck "
+        ARTS  = " the a an this that these those its his her their our your my "
+        NOUNS = " file files script scripts command commands setting settings variable variables function functions method methods module modules package folder directory path flag option key value field column table endpoint hook hooks test tests suite server port "
+        EXTS  = "\\.(ts|tsx|js|jsx|mjs|cjs|py|sh|bash|zsh|go|rs|rb|java|c|h|cc|cpp|cs|swift|kt|php|sql|json|jsonl|ya?ml|toml|md|txt|css|scss|html|lock|plist|env|cfg|ini|log|wav|mp3|png)$"
+    }
+    function is_in(list, w) { return index(list, " " tolower(w) " ") > 0 }
+
+    # What is this, said out loud? "" drops it, KEEP speaks it verbatim,
+    # anything else is a noun that phrase() turns into words.
+    function kind(t,   first) {
+        sub(/^[[:space:]]+/, "", t); sub(/[[:space:]]+$/, "", t)
+        if (t == "") return ""
+        if (t ~ /^(https?:\/\/|www\.)/) return "link"
+        if (t ~ /\(\)$/) return "function"
+        if (t ~ /[[:space:]]/) {
+            first = t; sub(/[[:space:]].*$/, "", first)
+            if (is_in(CMDS, first) || first ~ /^\.\//) return "command"
+            if (t ~ /(^|[[:space:]])-{1,2}[A-Za-z]/) return "command"
+            return "KEEP"          # plain words in backticks are still prose
+        }
+        if (is_in(CMDS, t) || t ~ /^\.\//) return "command"
+        if (t ~ /\//) return "file"
+        if (t ~ EXTS) return "file"
+        if (t ~ /^[A-Z][A-Z0-9_]{2,}$/) return "setting"
+        if (t ~ /^[0-9]+([.,][0-9]+)?$/) return "KEEP"   # numbers read fine
+        if (t ~ /^[A-Za-z]+$/) return "KEEP"             # `true`, `main`
+        return "it"
+    }
+    function phrase(k) {
+        if (k == "file")     return "the file"
+        if (k == "link")     return "the link"
+        if (k == "command")  return "that command"
+        if (k == "setting")  return "that setting"
+        if (k == "function") return "that function"
+        return "it"
+    }
+    function bare(k) { return (k == "it") ? "value" : phrase(k) }
+
+    function lastword(s) { sub(/[^A-Za-z0-9]+$/, "", s); sub(/^.*[^A-Za-z0-9]/, "", s); return s }
+    function firstword(s) { sub(/^[^A-Za-z0-9]+/, "", s); sub(/[^A-Za-z0-9].*$/, "", s); return s }
+
+    # The words on either side pick the article, so "the `auth.ts` file" comes
+    # out as "the file" rather than "the the file file".
+    function emit(k, before, after) {
+        if (k == "" || k == "KEEP") return ""
+        if (is_in(NOUNS, firstword(after))) return ""   # the noun after it already says this
+        return is_in(ARTS, lastword(before)) ? bare(k) : phrase(k)
+    }
+
+    {
+        line = $0
+        gsub(/```[^`]*```/, " ", line)     # a fenced block has nothing to say
+        # Split on backticks: odd fields are prose, even fields are the spans.
+        # An unterminated trailing span is left alone rather than guessed at.
+        n = split(line, part, "`")
+        out = ""
+        for (i = 1; i <= n; i++) {
+            if (i % 2 == 1 || i == n) { out = out part[i]; continue }
+            k = kind(part[i])
+            if (k == "KEEP") { out = out part[i]; continue }
+            out = out emit(k, out, part[i+1])
+        }
+
+        # Second pass for code that was never backticked. Only the unmistakable
+        # shapes — a URL, a path, a name carrying a code extension — so that
+        # ordinary prose and "and/or" and "e.g." are left alone.
+        m = split(out, w, " ")
+        res = ""
+        for (i = 1; i <= m; i++) {
+            core = w[i]; tail = ""; head = ""
+            if (match(core, /[.,;:!?)"'"'"']+$/)) {
+                tail = substr(core, RSTART); core = substr(core, 1, RSTART - 1)
+            }
+            if (match(core, /^[("'"'"']+/)) {
+                head = substr(core, 1, RLENGTH); core = substr(core, RLENGTH + 1)
+            }
+            k = ""
+            if (core ~ /^(https?:\/\/|www\.)/) k = "link"
+            else if (core ~ /^\.?\/[A-Za-z0-9_.\/-]+$/) k = "file"
+            else if (core ~ EXTS && core ~ /^[A-Za-z0-9_.\/-]+$/) k = "file"
+            if (k != "") {
+                said = emit(k, res, (i < m) ? w[i+1] : "")
+                if (said == "") { if (tail != "") res = res " " tail; continue }
+                core = said
+            }
+            res = res (res == "" ? "" : " ") head core tail
+        }
+        print res
+    }
+    '
+}
+
 # Last *text-bearing* assistant message in the .jsonl transcript.
 # - Tool-use, thinking, redacted_thinking blocks are skipped (we only speak prose).
 # - Compaction summary entries are skipped (those describe Claude's own context
@@ -541,7 +647,8 @@ MSG=$(jq -s -r '
         )
       | select(. != null and (. | tostring | length) > 0)
     ] | last // ""
-' "$TRANSCRIPT" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+' "$TRANSCRIPT" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' \
+  | strip_code | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
 
 if [[ -z "$MSG" || "$MSG" == "null" ]]; then
     debug "skip: no text-bearing assistant message (tool-use only?)"

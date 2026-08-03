@@ -73,7 +73,7 @@ microphone was live. `CLAUDESAY_DEBUG=1` prints which of those applied.
 ## If you are changing the code
 
 ```bash
-./tests.sh          # 48 tests. Silent by design — it renders instead of playing.
+./tests.sh          # 56 tests. Silent by design — it renders instead of playing.
 shellcheck -S warning claudesay.sh install.sh uninstall.sh tests.sh
 ```
 
