@@ -1,0 +1,42 @@
+AGENTS.md
+  s_a27198974a17cb::t_f50e9ac921d97f 76
+claudesay.sh
+  s_a27198974a17cb::t_27a0cafaae376d 529-537,540-634
+  s_a27198974a17cb::t_c7530388bee596 650-651
+  s_a27198974a17cb::t_97b5e7fb2c342e 538-539
+  s_a27198974a17cb::t_a55904daaf2d34 40
+README.md
+  s_a27198974a17cb::t_ae454211beae21 76-82,89
+  s_a27198974a17cb::t_f50e9ac921d97f 279
+  s_a27198974a17cb::t_64e2eadbf0c6c1 90
+CHANGELOG.md
+  s_a27198974a17cb::t_c055e06b228041 8-24
+  s_a27198974a17cb::t_dbd12abdf9f085 7
+CLAUDE.md
+  s_a27198974a17cb::t_42d519302f35a1 52-53,62
+  s_a27198974a17cb::t_2d41c77d6a9ec0 1-9,11-24,26-51,54-61,64-106
+  s_a27198974a17cb::t_f50e9ac921d97f 10
+  s_a27198974a17cb::t_0c456a13fe844d 63
+  s_a27198974a17cb::t_003d2a1949aa31 25
+install.sh
+  s_a27198974a17cb::t_a55904daaf2d34 7
+tests.sh
+  s_a27198974a17cb::t_8d509a2506dbe8 950-958
+  s_a27198974a17cb::t_e44b17930aa3d4 258-330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "10dca0d28dae8182142c5d76a7de7896d94ab6ff",
+  "prompts": {},
+  "sessions": {
+    "s_a27198974a17cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8fdffb9e-7788-433a-a9f6-a83e759772f1",
+        "model": "claude-opus-5"
+      },
+      "human_author": "abryfs <69842068+abryfs@users.noreply.github.com>"
+    }
+  }
+}
