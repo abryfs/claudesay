@@ -1,0 +1,19 @@
+samples/make-hero.py
+  s_f012f4a76d99dc::t_2d54a88a3d1086 49-52,54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "5c1acc3e2055f03c87c5df20856e84826d512243",
+  "prompts": {},
+  "sessions": {
+    "s_f012f4a76d99dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9af724f0-d713-4e0b-be87-32ebbde2ed86",
+        "model": "claude-opus-5"
+      },
+      "human_author": "abryfs <69842068+abryfs@users.noreply.github.com>"
+    }
+  }
+}
