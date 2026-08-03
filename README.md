@@ -36,7 +36,7 @@ curl -fsSL .../install.sh | bash -s -- --voice=Daniel   # pick a voice up front
 git clone https://github.com/abryfs/claudesay && cd claudesay && ./install.sh
 ```
 
-Have Claude Code do it: *"Install claudesay from https://github.com/abryfs/claudesay, following its AGENTS.md."* That file tells the agent to use `--no-picker`, verify the hook, and leave the config alone.
+Have Claude Code do it: *"Install claudesay from https://github.com/abryfs/claudesay, following its AGENTS.md."* That file covers the non-TTY flag, the verification steps, and the failure modes worth checking.
 
 In a terminal, the installer opens a voice picker that auditions each macOS voice as you arrow through it. Without a TTY it uses Samantha unless you pass `--voice=`.
 
@@ -78,9 +78,9 @@ State lives in `${TMPDIR}/claudesay-<uid>/<session>.{last,hash,pid,job}` at mode
 
 ### On calls
 
-A live microphone silences it. No configuration, no list of meeting apps.
+A live microphone silences it.
 
-The signal is CoreAudio's `DeviceIsRunningSomewhere`, the flag behind the orange dot in your menu bar, so Zoom, Meet, Teams, Slack huddles, Granola and QuickTime all work without claudesay knowing they exist. It reads a property. It never opens a stream, records nothing, and triggers no permission prompt.
+The signal is CoreAudio's `DeviceIsRunningSomewhere`, the flag behind the orange dot in your menu bar. It goes true whenever any process holds an input stream, which is why Zoom, Meet, Teams, Slack huddles, Granola and QuickTime all work without claudesay carrying a list of their names. It reads a property. It never opens a stream, records nothing, and triggers no permission prompt.
 
 Two details that took measuring:
 
@@ -91,7 +91,7 @@ Set `CLAUDESAY_MUTE_WHEN_MIC=0` to turn it off.
 
 ### By hand
 
-**⌃⌥⌘M** toggles mute from any app, focused or not. The installer sets it up. It's a small Swift helper on Carbon's `RegisterEventHotKey`, which claims one chord, sees nothing else, and needs no Accessibility permission.
+**⌃⌥⌘M** toggles mute from any app, focused or not. The installer registers it. It's a small Swift helper on Carbon's `RegisterEventHotKey`, which claims one chord, sees nothing else, and needs no Accessibility permission.
 
 ```bash
 claudesay.sh --mute 45    # 45 minutes, then it lifts itself
@@ -110,7 +110,7 @@ A line that can't get the floor within `CLAUDESAY_QUEUE_WAIT` seconds gets dropp
 
 ## The neural voice
 
-On Apple Silicon with [`uv`](https://docs.astral.sh/uv/) installed, claudesay uses [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) and falls back to the built-in voice everywhere else. There's no switch to flip.
+On Apple Silicon with [`uv`](https://docs.astral.sh/uv/) installed, claudesay uses [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) and falls back to the built-in voice everywhere else.
 
 A neural voice needs a model in memory, so claudesay holds it only while you're working:
 
@@ -139,12 +139,10 @@ Measured on an M3 Pro, 187 characters of text making 11.5s of speech:
 
 </details>
 
-## Configuration
-
-You shouldn't need any of this.
+## Environment variables
 
 <details>
-<summary>Every environment variable</summary>
+<summary>All of them</summary>
 
 Set them in `~/.claude/settings.json` under `env`, or in your shell.
 

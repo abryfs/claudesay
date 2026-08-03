@@ -27,16 +27,14 @@ sessions, and the global mute key is **⌃⌥⌘M**.
 
 ## Do not configure anything
 
-The defaults are the product. There is no setup step after install, and adding
-env vars is almost always a mistake:
+Set an env var only when the user names that behaviour. Three things are already
+handled, and reaching for them is the common mistake:
 
-- **The engine is chosen automatically.** Neural voice if the machine can run it
-  (Apple Silicon + `uv`), built-in `say` otherwise. Do not set `CLAUDESAY_ENGINE`.
-- **Meeting detection is on.** Do not set `CLAUDESAY_MUTE_WHEN_MIC=0`.
-- **The mute hotkey is installed and running.** Do not write Shortcuts, Automator
-  actions, `skhd` configs, or any other hotkey mechanism.
-
-Only set an env var if the user asks for that specific behavior by name.
+- The engine resolves itself: neural voice on Apple Silicon with `uv`, built-in
+  `say` otherwise. Leave `CLAUDESAY_ENGINE` unset.
+- Meeting detection runs by default. Leave `CLAUDESAY_MUTE_WHEN_MIC` unset.
+- `⌃⌥⌘M` is registered by the installer. Do not build a second hotkey out of
+  Shortcuts, Automator or `skhd`.
 
 ## Operating it
 
