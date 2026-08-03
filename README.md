@@ -144,12 +144,12 @@ Requires [`uv`](https://docs.astral.sh/uv/) (`brew install uv`). Nothing else to
 | | `say` | `kokoro` |
 |---|---|---|
 | Time to audio | instant | **0.66s** warm · instant (via `say`) when cold |
-| Resident memory | 0 | **~460 MB** warm · **0 when idle** |
+| Resident memory | 0 | **~110–460 MB** warm (grows with use, then flat) · **0 when idle** |
 | Peak during model load | — | ~740 MB, once per warm-up |
 | Cost | $0 | $0 |
 | Network | none | model download, once |
 
-Memory is flat across use (457 MB → 460 MB over 15 utterances), so it does not creep the way a long-lived TTS server can.
+Memory settles rather than creeping: ~110 MB after a couple of utterances, rising to ~460 MB under sustained use and then holding flat (457 MB → 460 MB across 15 utterances). A long-lived TTS server that leaks would keep climbing past that.
 
 **Why a server and not just one process per turn?** Because per-turn is unusable: synthesis is fast (~0.8s) but importing the ML stack and loading the model costs ~3s *every time*, so a fresh process per turn measured ~4s before you hear anything. The server pays that once; idle-exit is what keeps "warm" from meaning "resident forever."
 
