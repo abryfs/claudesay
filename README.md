@@ -26,7 +26,9 @@ Or download [comparison.mp3](samples/0-comparison.mp3), [say](samples/1-say-sama
 
 Paste into Claude Code:
 
-> Install claudesay from https://github.com/abryfs/claudesay, following its AGENTS.md.
+```text
+Install claudesay from https://github.com/abryfs/claudesay, following its AGENTS.md.
+```
 
 It reads [AGENTS.md](AGENTS.md), which covers the non-TTY flag, the verification steps, and the failure modes worth checking.
 
