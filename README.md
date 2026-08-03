@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="samples/hero.png" alt="claudesay — Claude Code tells you the one sentence that matters" width="100%">
+  <img src="samples/hero.png" alt="claudesay: Claude Code tells you the one sentence that matters" width="100%">
 </p>
 
 # claudesay
@@ -9,43 +9,26 @@
 [![license](https://img.shields.io/github/license/abryfs/claudesay)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-only-blue)
 
-**Claude Code tells you the one sentence that matters.** A single bash hook that speaks the meaningful end of a reply when the turn finishes — and stays quiet the rest of the time. It won't talk over a meeting, and it won't talk over itself.
+A Stop hook that speaks the last sentence of Claude's reply, then shuts up. It won't talk over a meeting and it won't talk over another session.
 
 ## Hear it
 
-Same sentence through both engines — built-in `say` first, then the local neural voice. Press play:
+Built-in `say` first, then the local neural voice, same sentence:
 
 <video src="https://github.com/abryfs/claudesay/raw/main/samples/0-comparison.mp4" controls width="100%"></video>
 
-Prefer the raw files: [**comparison.mp3**](samples/0-comparison.mp3) · [`say` alone](samples/1-say-samantha.mp3) · [neural alone](samples/2-kokoro-af-heart.mp3). Or straight from a terminal, no clone:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/samples/0-comparison.mp3 \
-  -o /tmp/claudesay-demo.mp3 && afplay /tmp/claudesay-demo.mp3
-```
-
-Both clips are loudness-normalized to −16 LUFS, so you're judging the voices and not the volume. Neither came from a demo script — they're `say -v Samantha` and a `POST /speak` to the same voice server the hook uses.
+Raw files: [comparison.mp3](samples/0-comparison.mp3) · [say](samples/1-say-samantha.mp3) · [neural](samples/2-kokoro-af-heart.mp3). Both are normalized to −16 LUFS so you're judging the voice, not the volume.
 
 ## Install
-
-Paste this into Claude Code:
-
-> Install claudesay from https://github.com/abryfs/claudesay — read its AGENTS.md first and follow it.
-
-That's the whole thing. It reads [AGENTS.md](AGENTS.md), runs the installer, verifies the hook, and stops. Nothing to configure afterwards.
-
-Or do it yourself:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/install.sh | bash
 ```
 
-Open a new Claude Code session and ask something. When the reply ends, you'll hear the last sentence.
-
-**What you get without deciding anything:** the best voice your machine can run, silence while you're on a call, one voice at a time across sessions, and **⌃⌥⌘M** to mute from any app.
+Open a new Claude Code session and ask something. When the reply ends you'll hear the last sentence. Nothing to configure after this.
 
 <details>
-<summary>Other ways in — specific voice, from a clone, or by hand</summary>
+<summary>Other ways in</summary>
 
 ```bash
 curl -fsSL .../install.sh | bash -s -- --no-picker      # non-interactive
@@ -53,151 +36,135 @@ curl -fsSL .../install.sh | bash -s -- --voice=Daniel   # pick a voice up front
 git clone https://github.com/abryfs/claudesay && cd claudesay && ./install.sh
 ```
 
-In a real terminal the installer opens an arrow-key voice picker that auditions each macOS voice as you highlight it. Without a TTY it uses `Samantha` unless you pass `--voice=`.
+Have Claude Code do it: *"Install claudesay from https://github.com/abryfs/claudesay, following its AGENTS.md."* That file tells the agent to use `--no-picker`, verify the hook, and leave the config alone.
 
-**By hand:** copy `claudesay.sh`, `claudesay-mic.py` and `claudesay-voice.py` into `~/.claude/hooks/`, `chmod +x` them, and add the Stop hook block from [How it's wired](#how-its-wired).
+In a terminal, the installer opens a voice picker that auditions each macOS voice as you arrow through it. Without a TTY it uses Samantha unless you pass `--voice=`.
+
+By hand: copy `claudesay.sh`, `claudesay-mic.py` and `claudesay-voice.py` into `~/.claude/hooks/`, `chmod +x`, then add the Stop block from [How it's wired](#how-its-wired).
 
 </details>
 
-## What it says, and what it refuses to say
+## What it speaks
 
-Given this final message from Claude:
+Given this reply:
 
 > I've updated the migration to backfill in batches of 500 instead of all at once, added an index on `events.team_id`, and re-ran the suite. **All three tests pass and the migration completed cleanly, so this is ready to deploy to staging whenever you want.**
 
-claudesay speaks exactly the bolded sentence and nothing else. That's the whole editorial rule: **the last sentence, because that's where the verdict or the question lands.** You already read the setup on screen; the part you have to act on is the part worth saying out loud.
+you hear the bold part and nothing else. The rule is the last sentence, because that's where the verdict or the question lands.
 
-| Claude's response | claudesay |
+| Claude's reply | claudesay |
 |---|---|
-| A long final summary | Speaks the **last sentence** |
-| "Want me to deploy now?" | Speaks the **question** |
-| "Let me check the logs." *(mid-pipeline filler)* | **Silent** |
-| "Done." / "OK." *(trivial ack)* | **Silent** |
-| The same response twice | **Silent** *(deduped on a content hash)* |
-| Two Stops within 4s *(pipeline pause)* | **Silent** *(debounced)* |
-| A tool-use-only turn *(no prose)* | **Silent** |
-| You start typing while it speaks | **Cut off** *(barge-in)* |
+| A long final summary | last sentence |
+| "Want me to deploy now?" | the question |
+| "Let me check the logs." | silent (filler) |
+| "Done." / "OK." | silent (too short) |
+| The same reply twice | silent (deduped) |
+| Two Stops within 4s | silent (debounced) |
+| A tool-use-only turn | silent (no prose) |
+| You start typing | cut off |
 
 <details>
-<summary>How the filtering actually works</summary>
+<summary>How the filter works</summary>
 
-Four guards stack, cheapest first:
+Four checks, cheapest first: the `stop_hook_active` loop guard, a per-session debounce, a filler heuristic for short messages opening with `Let me` / `I'll` / `Now` / `Checking` / `Done` and friends, then an md5 dedupe on the chosen text.
 
-1. **`stop_hook_active` loop guard** — if a previous hook forced Claude to continue, skip, or we'd narrate the loop.
-2. **Per-session debounce** — collapses Stop events within `CLAUDESAY_DEBOUNCE` seconds of each other.
-3. **Filler heuristic** — short messages (<120 chars) opening with `Let me`, `I'll`, `Now`, `Running`, `Checking`, `OK`, `Done` and friends (smart-quote variants included) are transitional, not results.
-4. **Content dedupe** — an md5 of the chosen text, so a repeated reply is spoken once.
+What survives loses its markdown and ANSI escapes, gets truncated to `CLAUDESAY_MAX`, and the last sentence of 15 characters or more is what gets spoken.
 
-What survives is stripped of markdown and ANSI escapes (so nothing reads literal asterisks or colour codes) and truncated to `CLAUDESAY_MAX`, then the last sentence of ≥15 chars is what gets spoken.
-
-State lives in `${TMPDIR}/claudesay-<uid>/<session>.{last,hash,pid,job}` at mode `0700`, wiped on reboot.
+State lives in `${TMPDIR}/claudesay-<uid>/<session>.{last,hash,pid,job}` at mode 0700, wiped on reboot.
 
 </details>
 
-## Staying out of your way
+## Staying quiet
 
-Three guards, each for a failure you can't take back once it happens.
+### On calls
 
-### It goes silent when you're on a call
+A live microphone silences it. No configuration, no list of meeting apps.
 
-If a microphone is live, claudesay says nothing. No configuration, no list of meeting apps.
+The signal is CoreAudio's `DeviceIsRunningSomewhere`, the flag behind the orange dot in your menu bar, so Zoom, Meet, Teams, Slack huddles, Granola and QuickTime all work without claudesay knowing they exist. It reads a property. It never opens a stream, records nothing, and triggers no permission prompt.
 
-A notification during a meeting is broadcast to everyone listening, and you cannot un-say it — muting after the fact is already too late. So this is automatic, not opt-in.
+Two details that took measuring:
 
-The signal is CoreAudio's `DeviceIsRunningSomewhere`, the same flag behind the orange dot in your menu bar. It's true whenever any process holds an input stream, so Zoom, Meet, Teams, Slack huddles, Granola and QuickTime all work without claudesay knowing they exist. **It reads a property flag: it never opens a stream, captures nothing, and never triggers a microphone permission prompt.**
+- It polls every input device, not the default one. On a MacBook Pro, opening the mic lit device 95 while the default input was device 90, so a default-only check read "idle" through a live capture.
+- It fails open. If the probe can't answer, claudesay speaks. A detector that mutes you forever without saying so is the worse bug.
 
-Two details that are load-bearing:
+Set `CLAUDESAY_MUTE_WHEN_MIC=0` to turn it off.
 
-- **Every input device is checked, not just the default.** Measured on a MacBook Pro, opening the mic lit up device 95 while the default input was device 90 — a default-only check reported "idle" straight through a live capture.
-- **It fails open.** If the probe can't answer, claudesay speaks. A detector that silently mutes you forever is the worse bug, because you'd never find out.
+### By hand
 
-Disable with `CLAUDESAY_MUTE_WHEN_MIC=0`.
-
-### Mute, from anywhere, with a hotkey
+**⌃⌥⌘M** toggles mute from any app, focused or not. The installer sets it up. It's a small Swift helper on Carbon's `RegisterEventHotKey`, which claims one chord, sees nothing else, and needs no Accessibility permission.
 
 ```bash
-claudesay.sh --mute          # silence every session until you unmute
-claudesay.sh --mute 45       # ...for 45 minutes, then it lifts itself
+claudesay.sh --mute 45    # 45 minutes, then it lifts itself
+claudesay.sh --mute       # until you say otherwise
 claudesay.sh --unmute
-claudesay.sh --toggle-mute   # bind this to a hotkey
 claudesay.sh --mute-status
 ```
 
-Mute is machine-wide and live: it reaches sessions that are **already running** and stops whatever is speaking right now. It silences claudesay only — system volume, music and call audio are untouched.
+Mute reaches sessions that are already running and stops whatever is mid-sentence. Your system volume, music and call audio are untouched. Before a meeting, reach for `--mute 45` rather than the plain toggle.
 
-**⌃⌥⌘M mutes and unmutes from any app**, focused or not. The installer sets it up — there is no Shortcuts recipe to follow and no permission to grant. It's a ~40-line helper using Carbon's `RegisterEventHotKey`, which needs no Accessibility access and can only observe the one combination it claims.
+### Over each other
 
-Prefer `--mute 45` over a bare toggle before a meeting: the mute you forget to lift is the one that quietly turns the tool off for good.
+Speech from different sessions queues. Inside one session the newest line still cuts off the previous one, which is what you want when you've moved on. Across sessions they wait their turn, since two sentences at once leaves you with neither.
 
-### One voice at a time
-
-Speech from different Claude Code sessions **queues** instead of overlapping.
-
-Inside a single session the newest line still cuts off the previous one — that's barge-in, and it's what you want. Across sessions, lines wait their turn, because two sentences spoken at once are both lost. You can re-read a screen; you can't un-hear an overlap.
-
-A line that can't get the floor within `CLAUDESAY_QUEUE_WAIT` seconds is dropped rather than queued forever — speech that arrives a minute late describes work you've already moved on from.
+A line that can't get the floor within `CLAUDESAY_QUEUE_WAIT` seconds gets dropped instead of queued forever.
 
 ## The neural voice
 
-You don't turn this on. If the machine can run it — Apple Silicon with [`uv`](https://docs.astral.sh/uv/) — claudesay uses [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) automatically and falls back to the built-in voice when it can't. There is no setting to get right.
+On Apple Silicon with [`uv`](https://docs.astral.sh/uv/) installed, claudesay uses [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) and falls back to the built-in voice everywhere else. There's no switch to flip.
 
-The catch with a neural voice is that it needs a model in memory. claudesay keeps it warm **only while you're working**, and never makes you wait for it.
+A neural voice needs a model in memory, so claudesay holds it only while you're working:
 
-- **First turn after a quiet spell** is spoken by `say`, instantly, while the voice server warms in the background (~30s, once). You never wait on a model.
-- **Every turn after that** is neural, in ~0.7s.
-- **After 5 minutes of silence** the server exits and returns the memory.
-- **Anything that goes wrong** — server down, synthesis error, timeout, no `uv` — falls back to `say`. The failure mode is a worse voice, never silence.
+- The first turn after a quiet spell goes out through `say` while the server warms behind it (~30s, once).
+- Every turn after that is neural, in about 0.7s.
+- Five minutes of silence and the server exits, returning the memory.
+- Server down, synthesis error, timeout, no `uv`: it falls back to `say`. You get a worse voice, never silence.
 
-Measured on an M3 Pro, a 187-char sentence → 11.5s of speech:
+Measured on an M3 Pro, 187 characters of text making 11.5s of speech:
 
 | | `say` | `kokoro` |
 |---|---|---|
-| Time to audio | instant | **0.66s** warm · instant (via `say`) when cold |
-| Resident memory | 0 | **~110–460 MB** warm, then flat · **0 when idle** |
-| Peak during load | — | ~740 MB, once per warm-up |
-| Cost | $0 | $0 |
-| Network | none | model download, once |
+| Time to audio | instant | 0.66s warm, instant via `say` when cold |
+| Resident memory | 0 | 110–460 MB warm, 0 idle |
+| Peak during load | | ~740 MB, once per warm-up |
+| Network | none | one model download |
 
 <details>
-<summary>Why a server, and why MLX — the measurements behind those choices</summary>
+<summary>Why a server, and why MLX</summary>
 
-**Why not one process per turn?** Because it's unusable. Synthesis is fast (~0.8s), but importing the ML stack and loading the model costs ~3s *every time*, so a fresh process per turn measured **~4s** before you hear anything. The server pays that once. Idle-exit is what stops "warm" from meaning "resident forever."
+**Why not one process per turn?** Synthesis takes 0.8s but importing the ML stack and loading the model costs 3s every time, so a fresh process measured about 4s before you hear anything. The server pays that once, and idle-exit stops "warm" from meaning "resident forever."
 
-**Why MLX and not ONNX?** Same machine, same sentence: **MLX 0.76s · ONNX fp32 2.51s · ONNX int8 4.69s.** Two counter-intuitive results there — quantized int8 is *slower* than fp32 on Apple Silicon, and CoreML is slower than plain CPU because it can only claim a fraction of the graph (~1300 of ~3400 nodes), so partition overhead eats the win. MLX uses the GPU and wins by ~3.8×.
+**Why MLX over ONNX?** Same machine, same sentence: MLX 0.76s, ONNX fp32 2.51s, ONNX int8 4.69s. Two surprises in there. Quantized int8 runs *slower* than fp32 on Apple Silicon, and CoreML loses to plain CPU because it only claims about 1300 of 3400 graph nodes, so partition overhead eats the gain.
 
-**Does it leak?** No. Memory settles rather than creeping: ~110 MB after a couple of utterances, rising to ~460 MB under sustained use and then holding flat (457 → 460 MB across 15 utterances).
+**Does it leak?** No. It settles at about 460 MB under sustained use and holds there (457 → 460 MB across 15 utterances).
 
 </details>
 
 ## Configuration
 
-**You shouldn't need this.** The defaults are chosen so there's nothing to set — engine, meeting detection, the queue and the hotkey all configure themselves. This table exists for the rare case where you want to override one on purpose.
+You shouldn't need any of this.
 
 <details>
 <summary>Every environment variable</summary>
 
-Set these in `~/.claude/settings.json` under `env`, or in your shell.
+Set them in `~/.claude/settings.json` under `env`, or in your shell.
 
 | Variable | Default | What it does |
 |---|---|---|
 | `CLAUDESAY_ENGINE` | `auto` | `auto` picks the best available. Force with `say` or `kokoro`. |
 | `CLAUDESAY_VOICE` | `Samantha` | Any macOS voice. `say -v '?'` lists them. |
-| `CLAUDESAY_RATE` | system | `say -r` words/min. Try `200`–`260` for snappier reads. |
+| `CLAUDESAY_RATE` | system | `say -r` words per minute. 200–260 reads snappier. |
 | `CLAUDESAY_DEBOUNCE` | `4` | Seconds between fires per session. |
 | `CLAUDESAY_MIN_LEN` | `40` | Skip messages shorter than this. |
-| `CLAUDESAY_MAX` | `220` | Truncate spoken text to this many chars. |
-| **Staying quiet** | | |
-| `CLAUDESAY_MUTE_WHEN_MIC` | `1` | Stay silent while any microphone is live. `0` disables. |
-| `CLAUDESAY_MIC_TTL` | `8` | Seconds to cache the mic check, so the hook stays fast. |
+| `CLAUDESAY_MAX` | `220` | Truncate spoken text to this many characters. |
+| `CLAUDESAY_MUTE_WHEN_MIC` | `1` | Stay silent while a microphone is live. |
+| `CLAUDESAY_MIC_TTL` | `8` | Seconds to cache the mic check. |
 | `CLAUDESAY_MUTE_FILE` | `~/.claude/claudesay-muted` | Where the mute switch lives. |
-| `CLAUDESAY_QUEUE_WAIT` | `30` | Max seconds a line waits behind another session before being dropped. |
-| `CLAUDESAY_DISABLE` | unset | Set to anything to silence without uninstalling. |
-| **Neural voice** | | |
+| `CLAUDESAY_QUEUE_WAIT` | `30` | Seconds a line waits behind another session before being dropped. |
+| `CLAUDESAY_DISABLE` | unset | Silence it without uninstalling. |
 | `CLAUDESAY_KOKORO_VOICE` | `af_heart` | Kokoro voice name. |
 | `CLAUDESAY_KOKORO_IDLE` | `300` | Seconds of silence before the voice server exits. `0` never exits. |
 | `CLAUDESAY_KOKORO_PORT` | `8787` | Loopback port for the voice server. |
-| `CLAUDESAY_KOKORO_TIMEOUT` | `10` | Seconds to wait for synthesis before falling back to `say`. |
-| **Debugging** | | |
+| `CLAUDESAY_KOKORO_TIMEOUT` | `10` | Seconds to wait for synthesis before falling back. |
 | `CLAUDESAY_DEBUG` | unset | Print every decision the hook makes to stderr. |
 | `CLAUDESAY_SILENT` | unset | Dry run: render speech to a file instead of playing it. |
 | `CLAUDESAY_STATE` | per-user `$TMPDIR` | Override the state directory. |
@@ -206,7 +173,7 @@ Set these in `~/.claude/settings.json` under `env`, or in your shell.
 
 ## How it's wired
 
-The installer adds a `Stop` hook to `~/.claude/settings.json`. **Use absolute paths** — Claude Code does not tilde-expand `command`:
+The installer adds a `Stop` hook to `~/.claude/settings.json`. Use absolute paths, since Claude Code doesn't tilde-expand `command`:
 
 ```json
 {
@@ -222,15 +189,11 @@ The installer adds a `Stop` hook to `~/.claude/settings.json`. **Use absolute pa
 }
 ```
 
-`Stop` fires when Claude finishes a turn. The hook reads the transcript path from stdin, takes the last text-bearing assistant message, and decides whether to speak it. `timeout: 15` is a safety floor; the hook itself returns in well under a second.
+`Stop` fires when Claude finishes a turn. The hook reads `transcript_path` from stdin, takes the last text-bearing assistant message, and decides whether to speak it. The 15s timeout is a safety floor; the hook returns in well under a second. Stop hooks ignore `matcher`, so claudesay omits it.
 
-Three files are installed: `claudesay.sh` (the hook), `claudesay-mic.py` (the meeting check) and `claudesay-voice.py` (the neural server, inert unless you enable it).
+Upgrading with sessions already open: Claude Code reads hook config at session start, so those sessions keep calling the path they launched with. The installer forwards the old `voice-notify.sh` name to `claudesay.sh` instead of orphaning it, which puts them on the current queue and mute switch without a restart.
 
-> **Note:** Stop hooks ignore a `matcher` field — Anthropic's docs say it's silently dropped, so claudesay omits it.
-
-**Upgrading with sessions already open?** Claude Code reads hook config at session start, so running sessions keep calling whatever path they launched with. The installer forwards the old `voice-notify.sh` path to `claudesay.sh` rather than orphaning it, which puts those sessions on the current queue and mute switch without a restart.
-
-**Uninstall:** `./uninstall.sh` — removes the hook entry, the three files, any running voice server, and the state directory.
+`./uninstall.sh` removes the hook entry, the installed files, the hotkey agent, any running voice server, and the state directory.
 
 ## Troubleshooting
 
@@ -238,18 +201,17 @@ Three files are installed: `claudesay.sh` (the hook), `claudesay-mic.py` (the me
 <summary>It never speaks</summary>
 
 ```bash
-say -v Samantha "test"                       # 1. does say work at all?
-~/.claude/hooks/claudesay.sh --mute-status   # 2. is it muted?
-python3 ~/.claude/hooks/claudesay-mic.py; echo $?   # 3. 0 = a mic is live, so it's staying quiet on purpose
-jq '.hooks.Stop' ~/.claude/settings.json     # 4. is the hook wired?
+say -v Samantha "test"                              # does macOS speech work?
+~/.claude/hooks/claudesay.sh --mute-status          # muted?
+python3 ~/.claude/hooks/claudesay-mic.py; echo $?   # 0 means a mic is live
+jq '.hooks.Stop' ~/.claude/settings.json            # hook still wired?
 
-# 5. Replay your latest transcript with full tracing.
 LATEST=$(ls -t ~/.claude/projects/*/*.jsonl | head -1)
 echo "{\"transcript_path\":\"$LATEST\",\"session_id\":\"debug\",\"stop_hook_active\":false}" \
   | CLAUDESAY_DEBUG=1 bash ~/.claude/hooks/claudesay.sh
 ```
 
-Silence is often correct: the message was under `CLAUDESAY_MIN_LEN`, was filler, was a duplicate, landed inside the debounce window, or a microphone was live. `CLAUDESAY_DEBUG=1` names the reason on every fire.
+Silence is normally correct: too short, filler, duplicate, inside the debounce window, or a live microphone. `CLAUDESAY_DEBUG=1` names the reason on every fire.
 
 </details>
 
@@ -257,67 +219,56 @@ Silence is often correct: the message was under `CLAUDESAY_MIN_LEN`, was filler,
 <summary>The neural voice won't start</summary>
 
 ```bash
-command -v uv || brew install uv                        # 1. uv present?
-CLAUDESAY_ENGINE=kokoro ~/.claude/hooks/claudesay.sh --test   # 2. is the server warm?
-cat "${TMPDIR}/claudesay-$(id -u)/voice.log"            # 3. what did it say?
-curl -sS http://127.0.0.1:8787/health                   # 4. is it listening?
+command -v uv || brew install uv
+CLAUDESAY_ENGINE=kokoro ~/.claude/hooks/claudesay.sh --test
+cat "${TMPDIR}/claudesay-$(id -u)/voice.log"
+curl -sS http://127.0.0.1:8787/health
 ```
 
-The first `--test` after a quiet spell always reports "cold" and speaks via `say` — that's the design, not a fault. Wait ~30s and run it again. If it's still cold, the log says why (usually `uv` missing or a failed model download).
+The first `--test` after a quiet spell reports "cold" and speaks through `say`. That's the design. Wait 30s and run it again; if it's still cold the log says why, usually a missing `uv` or a failed model download.
 
 </details>
 
 <details>
-<summary>settings.json got mangled, or the picker left my terminal weird</summary>
+<summary>settings.json got mangled, or the picker left the terminal weird</summary>
 
-The installer writes a timestamped backup before touching anything, and refuses to edit a `settings.json` that isn't valid JSON:
+The installer backs up `settings.json` before touching it and refuses to edit invalid JSON.
 
 ```bash
 cp "$(ls -t ~/.claude/settings.json.bak.* | head -1)" ~/.claude/settings.json
-stty sane && tput cnorm      # if the voice picker exited badly
+stty sane && tput cnorm
 ```
 
 </details>
 
-## Why this one
+## Alternatives
 
-Claude Code still ships **no native TTS** ([#50720](https://github.com/anthropics/claude-code/issues/50720) is open). Most alternatives ask for an API key and per-call billing, install a daemon or MCP server, or say "Done" so often you turn them off within a day.
+Claude Code ships no native TTS ([#50720](https://github.com/anthropics/claude-code/issues/50720) is open), so there are a few options.
 
-- **One readable bash file.** Read it, audit it, change it.
-- **macOS built-ins by default** — `say` + `jq`.
-- **Quiet unless it's worth hearing.** The filtering is the product.
-- **$0 forever**, neural voice included. No key, no quota.
-- **A better voice never costs latency or idle RAM.** Kokoro is opt-in, warms in the background, exits when you stop.
-- **Security-conscious.** Validates `$VOICE` argv against flag injection, keeps state in a private per-user dir (not world-writable `/tmp`), refuses to write through symlinked state files, sends synthesis text via stdin so a reply starting with `@` can't make curl read a local file, and atomic-renames `settings.json`.
+- **`say` straight in `settings.json`.** No transcript awareness, no debounce, no filler filter. You'll hear "Done" fifty times an hour.
+- **[peon-ping](https://github.com/PeonPing/peon-ping).** Sound effects rather than speech.
+- **[VoiceMode](https://github.com/mbailey/voicemode).** Two-way conversation over MCP and Whisper. Heavier. Take it if you want duplex.
+- **[AgentVibes](https://github.com/paulpreibisch/AgentVibes).** 904 Piper voices, per-LLM routing, effects.
+- **[claude-code-tts](https://github.com/ktaletsk/claude-code-tts).** Same model through a per-turn CLI, which pays model load on every turn.
+- **[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI).** A solid general-purpose Kokoro server, but you start the container and it stays resident.
 
-Versus the neighbours:
-
-- **`say` straight in `settings.json`** — no transcript awareness, no debounce, no filler filter. You'll hear "Done" fifty times an hour.
-- **[peon-ping](https://github.com/PeonPing/peon-ping)** — sound effects, not speech. Different niche.
-- **[VoiceMode](https://github.com/mbailey/voicemode)** — full two-way conversation over MCP + Whisper. Heavier. Use it if you want duplex.
-- **[AgentVibes](https://github.com/paulpreibisch/AgentVibes)** — 904 Piper voices, per-LLM routing, FX. Use it if you want the kitchen sink.
-- **[claude-code-tts](https://github.com/ktaletsk/claude-code-tts)** — same model, per-turn CLI, so it pays model load on every single turn.
-- **[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)** — a fine general-purpose Kokoro server, but it's a container you start and it stays resident. claudesay's starts and exits itself.
+claudesay is one bash file you can read in a sitting, costs nothing, and needs no key.
 
 ## Requirements
 
-- macOS, Apple Silicon for the neural voice (Intel stays on `say`)
-- `jq` — `brew install jq`
-- `python3` — ships with macOS; used for the mic check, stdlib only
-- Claude Code 2.x (tested on 2.1.123)
-- [`uv`](https://docs.astral.sh/uv/) — only if you enable the neural voice
+macOS with `jq` (`brew install jq`) and Claude Code 2.x, tested on 2.1.123. `python3` ships with macOS and covers the mic check using only the stdlib. The neural voice wants Apple Silicon and [`uv`](https://docs.astral.sh/uv/); Intel Macs stay on `say`.
 
-Linux/Windows ports welcome: see `claudesay.sh` for the contract and swap the `say` call for `espeak-ng` or PowerShell's `SpeechSynthesizer`.
+Linux and Windows ports welcome. See `claudesay.sh` for the contract and swap the `say` call for `espeak-ng` or PowerShell's `SpeechSynthesizer`.
 
 ## Contributing
 
 ```bash
-./tests.sh                              # 48 tests, silent — renders instead of playing
+./tests.sh                              # 48 tests, silent
 CLAUDESAY_AUDIBLE_TESTS=1 ./tests.sh    # let it use the speakers
 ```
 
-The suite is silent by default on purpose: it's developed on a laptop that also joins meetings, and an early version once talked over a live call. See [CONTRIBUTING.md](CONTRIBUTING.md), and [AGENTS.md](AGENTS.md) if a coding agent is doing the work.
+The suite renders instead of playing, because an early version talked over a live meeting. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest, and [AGENTS.md](AGENTS.md) covers coding agents.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
