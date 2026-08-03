@@ -13,11 +13,14 @@ A Stop hook that speaks the last sentence of Claude's reply, then shuts up. It w
 
 ## Hear it
 
-Built-in `say` first, then the local neural voice, same sentence:
+One sentence, built-in `say` first, then the local neural voice:
 
-<video src="https://github.com/abryfs/claudesay/raw/main/samples/0-comparison.mp4" controls width="100%"></video>
+```bash
+curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/samples/0-comparison.mp3 \
+  -o /tmp/claudesay.mp3 && afplay /tmp/claudesay.mp3
+```
 
-Raw files: [comparison.mp3](samples/0-comparison.mp3) · [say](samples/1-say-samantha.mp3) · [neural](samples/2-kokoro-af-heart.mp3). Both are normalized to −16 LUFS so you're judging the voice, not the volume.
+Or download [comparison.mp3](samples/0-comparison.mp3), [say](samples/1-say-samantha.mp3), [neural](samples/2-kokoro-af-heart.mp3). Both voices are normalized to −16 LUFS so you're judging the voice, not the volume.
 
 ## Install
 

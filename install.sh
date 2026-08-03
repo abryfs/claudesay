@@ -119,6 +119,52 @@ fi
 # see the one combination it claims, so there is nothing to approve and nothing
 # to be nervous about. If the toolchain isn't here we skip it silently-ish;
 # a missing hotkey must never fail an install.
+# The chord is a two-key default on purpose: a mute you reach for mid-sentence
+# has to be fast, and ⌃⌥⌘M is a four-finger stretch. ⌥M is free of system
+# bindings (⌘M is Minimize, which is why it is not that). Override with
+# CLAUDESAY_HOTKEY, e.g. "ctrl+opt+cmd+m" or "shift+opt+k".
+HOTKEY_SPEC="${CLAUDESAY_HOTKEY:-opt+m}"
+
+# Carbon modifier masks and the handful of key codes worth naming.
+hotkey_parse() {
+    local spec; spec=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    local mask=0 key="" part
+    local IFS='+'
+    for part in $spec; do
+        case "$part" in
+            cmd|command|meta) mask=$((mask | 256)) ;;
+            shift)            mask=$((mask | 512)) ;;
+            opt|option|alt)   mask=$((mask | 2048)) ;;
+            ctrl|control)     mask=$((mask | 4096)) ;;
+            *)                key="$part" ;;
+        esac
+    done
+    local code=""
+    case "$key" in
+        a) code=0 ;; s) code=1 ;; d) code=2 ;; f) code=3 ;; h) code=4 ;;
+        g) code=5 ;; z) code=6 ;; x) code=7 ;; c) code=8 ;; v) code=9 ;;
+        b) code=11 ;; q) code=12 ;; w) code=13 ;; e) code=14 ;; r) code=15 ;;
+        y) code=16 ;; t) code=17 ;; o) code=31 ;; u) code=32 ;; i) code=34 ;;
+        p) code=35 ;; l) code=37 ;; j) code=38 ;; k) code=40 ;; n) code=45 ;;
+        m) code=46 ;;
+        *) return 1 ;;
+    esac
+    # A hotkey with no modifier would swallow that letter system-wide, so a
+    # typo like "bogus+z" must fail rather than eat every Z you ever type.
+    (( mask != 0 )) || return 1
+    printf '%s %s' "$code" "$mask"
+}
+
+HOTKEY_PARSED=$(hotkey_parse "$HOTKEY_SPEC" || true)
+if [[ -z "$HOTKEY_PARSED" ]]; then
+    echo "  (unrecognised CLAUDESAY_HOTKEY='$HOTKEY_SPEC' — falling back to opt+m)"
+    HOTKEY_PARSED=$(hotkey_parse "opt+m")
+    HOTKEY_SPEC="opt+m"
+fi
+HOTKEY_CODE="${HOTKEY_PARSED% *}"
+HOTKEY_MASK="${HOTKEY_PARSED#* }"
+HOTKEY_LABEL=$(printf '%s' "$HOTKEY_SPEC" | sed 's/ctrl+/⌃/;s/control+/⌃/;s/opt+/⌥/;s/option+/⌥/;s/alt+/⌥/;s/cmd+/⌘/;s/command+/⌘/;s/shift+/⇧/' | tr '[:lower:]' '[:upper:]')
+
 HOTKEY_BIN="$HOOKS_DIR/claudesay-hotkey"
 HOTKEY_PLIST="$HOME/Library/LaunchAgents/com.claudesay.hotkey.plist"
 HOTKEY_SRC=""
@@ -149,6 +195,8 @@ if [[ -n "$HOTKEY_SRC" ]] && command -v swiftc >/dev/null 2>&1; then
   <array>
     <string>$HOTKEY_BIN</string>
     <string>$SCRIPT_PATH</string>
+    <string>$HOTKEY_CODE</string>
+    <string>$HOTKEY_MASK</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -158,7 +206,7 @@ if [[ -n "$HOTKEY_SRC" ]] && command -v swiftc >/dev/null 2>&1; then
 PLIST
         if launchctl bootstrap "gui/$(id -u)" "$HOTKEY_PLIST" 2>/dev/null \
             || launchctl load "$HOTKEY_PLIST" 2>/dev/null; then
-            echo "✓ global mute hotkey active: ⌃⌥⌘M (any app, no permissions needed)"
+            echo "✓ global mute hotkey active: $HOTKEY_LABEL (any app, no permissions needed)"
         else
             echo "  (hotkey helper installed but not started — run: launchctl bootstrap gui/\$(id -u) $HOTKEY_PLIST)"
         fi
