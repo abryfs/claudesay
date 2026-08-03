@@ -23,7 +23,7 @@
 #   CLAUDESAY_DISABLE   any value silences      (default: unset)
 #   CLAUDESAY_STATE     state directory         (default: per-user TMPDIR)
 #
-#   CLAUDESAY_ENGINE        say | kokoro        (default: say)
+#   CLAUDESAY_ENGINE   auto | say | kokoro      (default: auto)
 #   CLAUDESAY_KOKORO_PORT   loopback port       (default: 8787)
 #   CLAUDESAY_KOKORO_VOICE  Kokoro voice        (default: af_heart)
 #   CLAUDESAY_KOKORO_IDLE   server idle-exit s  (default: 300)
@@ -37,7 +37,7 @@
 
 set -u
 
-CLAUDESAY_VERSION="0.5.0"
+CLAUDESAY_VERSION="0.6.0"
 
 # Where this script lives — the optional voice server sits beside it.
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || SELF_DIR="."
@@ -128,8 +128,8 @@ Normal usage is invocation by Claude Code with stdin JSON. CLI helpers:
 Mute is machine-wide and takes effect immediately, including in sessions
 that are already running. It silences claudesay only, never system audio.
 
-Engines: CLAUDESAY_ENGINE=say (default, instant, built-in) or =kokoro
-(neural, local, needs uv; first use warms a server and falls back to say).
+Engine is chosen for you: the local neural voice when this machine can run
+it, the built-in voice otherwise. Force it with CLAUDESAY_ENGINE=say|kokoro.
 
 See ~/.claude/settings.json for hook wiring; see env vars at the top of
 $0 for tuning (CLAUDESAY_VOICE, CLAUDESAY_DEBOUNCE, CLAUDESAY_DEBUG, …).
@@ -173,7 +173,7 @@ if [[ -n "$RATE" ]] && ! [[ "$RATE" =~ ^[0-9]+$ ]]; then
     RATE=""
 fi
 
-ENGINE="${CLAUDESAY_ENGINE:-say}"
+ENGINE="${CLAUDESAY_ENGINE:-auto}"
 MUTE_WHEN_MIC="${CLAUDESAY_MUTE_WHEN_MIC:-1}"
 SILENT="${CLAUDESAY_SILENT:-}"
 MIC_TTL="${CLAUDESAY_MIC_TTL:-8}"
@@ -183,12 +183,27 @@ KOKORO_PORT="${CLAUDESAY_KOKORO_PORT:-8787}"
 KOKORO_TIMEOUT="${CLAUDESAY_KOKORO_TIMEOUT:-10}"
 VOICE_SCRIPT="${CLAUDESAY_VOICE_SCRIPT:-$SELF_DIR/claudesay-voice.py}"
 
-# Unknown engine names degrade to `say` rather than going silent — a typo in
+# Unknown engine names degrade rather than going silent — a typo in
 # settings.json should cost you a nicer voice, not every notification.
 case "$ENGINE" in
-    say|kokoro) ;;
-    *) ENGINE="say" ;;
+    say|kokoro|auto) ;;
+    *) ENGINE="auto" ;;
 esac
+
+# `auto` is the default because picking an engine is not a decision anyone
+# wants to make. If the machine can run the neural voice, it runs it; if it
+# can't, `say` covers it and nothing is announced or asked. The neural path
+# already falls back per-utterance, so guessing wrong here costs nothing.
+if [[ "$ENGINE" == "auto" ]]; then
+    if [[ -f "$VOICE_SCRIPT" ]] \
+        && command -v uv >/dev/null 2>&1 \
+        && command -v afplay >/dev/null 2>&1 \
+        && [[ "$(uname -m 2>/dev/null)" == "arm64" ]]; then
+        ENGINE="kokoro"
+    else
+        ENGINE="say"
+    fi
+fi
 # Both of these are numbers that end up in a URL and a curl timeout.
 [[ "$KOKORO_PORT" =~ ^[0-9]+$ ]] || KOKORO_PORT="8787"
 [[ "$KOKORO_TIMEOUT" =~ ^[0-9]+$ ]] || KOKORO_TIMEOUT="10"

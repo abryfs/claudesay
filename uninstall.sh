@@ -61,6 +61,14 @@ if [[ -f "$VOICE_PATH" ]]; then
     rm -f "$VOICE_PATH"
     echo "✓ removed $VOICE_PATH"
 fi
+HOTKEY_PLIST="$HOME/Library/LaunchAgents/com.claudesay.hotkey.plist"
+if [[ -f "$HOTKEY_PLIST" ]]; then
+    launchctl bootout "gui/$(id -u)/com.claudesay.hotkey" 2>/dev/null || true
+    launchctl unload "$HOTKEY_PLIST" 2>/dev/null || true
+    rm -f "$HOTKEY_PLIST" "$HOOKS_DIR/claudesay-hotkey"
+    echo "✓ removed the global mute hotkey"
+fi
+
 if [[ -f "$MIC_PATH" ]]; then
     rm -f "$MIC_PATH"
     echo "✓ removed $MIC_PATH"

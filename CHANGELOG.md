@@ -4,6 +4,40 @@ All notable changes to claudesay are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-08-03
+
+Fewer decisions. Everything that used to be a setting or a setup step is now a
+default that picks itself.
+
+### Added
+- **A real global mute hotkey, installed for you: ⌃⌥⌘M.** Works from any app,
+  focused or not. Previously the README asked you to build one in Shortcuts by
+  hand — three steps of homework for one keystroke. It's a small Swift helper
+  on Carbon's `RegisterEventHotKey`, which needs **no Accessibility permission**
+  and can only observe the single combination it claims, so there is nothing to
+  approve. Runs as a LaunchAgent; `uninstall.sh` removes it.
+- **`AGENTS.md`** — an operational contract for coding agents installing or
+  running claudesay, so the install prompt is one line and the agent already
+  knows not to configure anything.
+
+### Changed
+- **`CLAUDESAY_ENGINE` now defaults to `auto`.** If the machine can run the
+  neural voice (Apple Silicon + `uv`) it uses it, otherwise the built-in voice.
+  Choosing an engine was never a decision anyone wanted to make, and guessing
+  wrong costs nothing because the neural path already falls back per utterance.
+- The install prompt for Claude Code is the primary path in the README, ahead of
+  the curl one-liner.
+- README: configuration folded into a collapsible and prefaced with "you
+  shouldn't need this"; the neural voice is documented as automatic rather than
+  as an opt-in with a tuning block.
+
+### Fixed
+- The hotkey LaunchAgent is bootstrapped into the **GUI domain**
+  (`launchctl bootstrap gui/$(id -u)`). `launchctl load` inherits whatever
+  domain the installer runs in, and from an agent's shell the helper landed
+  outside the Aqua session, where `NSApplication` can't start — it exited 78
+  immediately and the hotkey silently never worked.
+
 ## [0.5.0] — 2026-08-03
 
 Everything here comes from one bad afternoon: a test run talked over a live

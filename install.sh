@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-CLAUDESAY_VERSION="0.5.0"
+CLAUDESAY_VERSION="0.6.0"
 
 REPO_RAW="${CLAUDESAY_RAW:-https://raw.githubusercontent.com/abryfs/claudesay/main}"
 HOOKS_DIR="$HOME/.claude/hooks"
@@ -88,7 +88,7 @@ else
 fi
 if [[ -s "$VOICE_PATH" ]]; then
     chmod +x "$VOICE_PATH"
-    echo "✓ installed $VOICE_PATH (neural voice — set CLAUDESAY_ENGINE=kokoro to use)"
+    echo "✓ installed $VOICE_PATH (neural voice — used automatically when this Mac can run it)"
 else
     rm -f "$VOICE_PATH"
     echo "  (skipped the optional neural voice server — say engine works regardless)"
@@ -108,6 +108,65 @@ if [[ -s "$MIC_PATH" ]]; then
 else
     rm -f "$MIC_PATH"
     echo "  ⚠ no mic probe — claudesay will NOT auto-mute during meetings"
+fi
+
+# ─── Global mute hotkey ──────────────────────────────────────────────────────
+# Installed by default, not offered as a chore. Telling someone to open
+# Shortcuts, add a Run Shell Script action and bind a key is three steps of
+# homework for one keystroke — so we compile a tiny helper and register it.
+#
+# Carbon's RegisterEventHotKey needs no Accessibility permission and can only
+# see the one combination it claims, so there is nothing to approve and nothing
+# to be nervous about. If the toolchain isn't here we skip it silently-ish;
+# a missing hotkey must never fail an install.
+HOTKEY_BIN="$HOOKS_DIR/claudesay-hotkey"
+HOTKEY_PLIST="$HOME/Library/LaunchAgents/com.claudesay.hotkey.plist"
+HOTKEY_SRC=""
+[[ -n "$SELF_DIR" && -f "$SELF_DIR/claudesay-hotkey.swift" ]] && HOTKEY_SRC="$SELF_DIR/claudesay-hotkey.swift"
+
+if [[ -z "$HOTKEY_SRC" ]]; then
+    HOTKEY_SRC="$(mktemp -t claudesay-hotkey).swift"
+    curl -fsSL "$REPO_RAW/claudesay-hotkey.swift" -o "$HOTKEY_SRC" 2>/dev/null || HOTKEY_SRC=""
+fi
+
+if [[ -n "$HOTKEY_SRC" ]] && command -v swiftc >/dev/null 2>&1; then
+    if swiftc -O -o "$HOTKEY_BIN" "$HOTKEY_SRC" 2>/dev/null; then
+        mkdir -p "$(dirname "$HOTKEY_PLIST")"
+        # Bootstrap into the GUI domain explicitly. `launchctl load` inherits
+        # whatever domain the installer happens to run in, and from a
+        # non-GUI context (an agent's shell, a CI job) the helper lands
+        # outside the Aqua session, where NSApplication cannot start — it
+        # exits 78 immediately and the hotkey silently never works.
+        launchctl bootout "gui/$(id -u)/com.claudesay.hotkey" 2>/dev/null || true
+        launchctl unload "$HOTKEY_PLIST" 2>/dev/null || true
+        cat >"$HOTKEY_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.claudesay.hotkey</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$HOTKEY_BIN</string>
+    <string>$SCRIPT_PATH</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/claudesay-hotkey.log</string>
+</dict>
+</plist>
+PLIST
+        if launchctl bootstrap "gui/$(id -u)" "$HOTKEY_PLIST" 2>/dev/null \
+            || launchctl load "$HOTKEY_PLIST" 2>/dev/null; then
+            echo "✓ global mute hotkey active: ⌃⌥⌘M (any app, no permissions needed)"
+        else
+            echo "  (hotkey helper installed but not started — run: launchctl bootstrap gui/\$(id -u) $HOTKEY_PLIST)"
+        fi
+    else
+        echo "  (couldn't build the hotkey helper — everything else works; use --toggle-mute)"
+    fi
+else
+    echo "  (no Swift toolchain — skipping the global hotkey; use --toggle-mute)"
 fi
 
 # Claude Code reads its hook config when a session starts, so sessions already

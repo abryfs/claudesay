@@ -28,42 +28,36 @@ Both clips are loudness-normalized to −16 LUFS, so you're judging the voices a
 
 ## Install
 
+Paste this into Claude Code:
+
+> Install claudesay from https://github.com/abryfs/claudesay — read its AGENTS.md first and follow it.
+
+That's the whole thing. It reads [AGENTS.md](AGENTS.md), runs the installer, verifies the hook, and stops. Nothing to configure afterwards.
+
+Or do it yourself:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/install.sh | bash
 ```
 
-Then open a new Claude Code session and ask it something. When the reply ends, you'll hear the last sentence.
+Open a new Claude Code session and ask something. When the reply ends, you'll hear the last sentence.
+
+**What you get without deciding anything:** the best voice your machine can run, silence while you're on a call, one voice at a time across sessions, and **⌃⌥⌘M** to mute from any app.
 
 <details>
-<summary>Other ways to install (non-interactive, specific voice, from a clone, or via Claude Code itself)</summary>
+<summary>Other ways in — specific voice, from a clone, or by hand</summary>
 
 ```bash
-# Non-interactive, default voice
-curl -fsSL .../install.sh | bash -s -- --no-picker
-
-# Non-interactive, specific voice
-curl -fsSL .../install.sh | bash -s -- --voice=Daniel
-
-# From a clone
+curl -fsSL .../install.sh | bash -s -- --no-picker      # non-interactive
+curl -fsSL .../install.sh | bash -s -- --voice=Daniel   # pick a voice up front
 git clone https://github.com/abryfs/claudesay && cd claudesay && ./install.sh
 ```
 
-Run in a real terminal, the installer opens an arrow-key voice picker that previews each macOS voice live on highlight (↑↓ to audition, ⏎ to pick, `q` for the default). Without a TTY — including when Claude Code runs it for you — it falls back to `Samantha` unless you pass `--voice=`.
+In a real terminal the installer opens an arrow-key voice picker that auditions each macOS voice as you highlight it. Without a TTY it uses `Samantha` unless you pass `--voice=`.
 
-To have Claude Code install it, paste:
-
-> Install claudesay (https://github.com/abryfs/claudesay) by running its install script with `--no-picker`, then confirm the Stop hook is wired in ~/.claude/settings.json.
-
-**Manual install**, if you'd rather not run a script: copy `claudesay.sh`, `claudesay-voice.py` and `claudesay-mic.py` into `~/.claude/hooks/`, `chmod +x` them, and add the Stop hook block from [How it's wired](#how-its-wired).
+**By hand:** copy `claudesay.sh`, `claudesay-mic.py` and `claudesay-voice.py` into `~/.claude/hooks/`, `chmod +x` them, and add the Stop hook block from [How it's wired](#how-its-wired).
 
 </details>
-
-Check it worked:
-
-```bash
-~/.claude/hooks/claudesay.sh --test          # speak a test sentence
-~/.claude/hooks/claudesay.sh --mute-status   # is it muted?
-```
 
 ## What it says, and what it refuses to say
 
@@ -131,13 +125,9 @@ claudesay.sh --mute-status
 
 Mute is machine-wide and live: it reaches sessions that are **already running** and stops whatever is speaking right now. It silences claudesay only — system volume, music and call audio are untouched.
 
-**For a global hotkey that works when Claude isn't the focused app**, use Shortcuts (built into macOS, nothing to install):
+**⌃⌥⌘M mutes and unmutes from any app**, focused or not. The installer sets it up — there is no Shortcuts recipe to follow and no permission to grant. It's a ~40-line helper using Carbon's `RegisterEventHotKey`, which needs no Accessibility access and can only observe the one combination it claims.
 
-1. Shortcuts → **+** → add **Run Shell Script**.
-2. Script: `$HOME/.claude/hooks/claudesay.sh --toggle-mute`
-3. Name it, then **⌘I** → *Add Keyboard Shortcut* → press your combination.
-
-Prefer `--mute 45` over a bare toggle for meetings: the mute you forget to lift is the one that quietly turns the tool off for good.
+Prefer `--mute 45` over a bare toggle before a meeting: the mute you forget to lift is the one that quietly turns the tool off for good.
 
 ### One voice at a time
 
@@ -147,16 +137,11 @@ Inside a single session the newest line still cuts off the previous one — that
 
 A line that can't get the floor within `CLAUDESAY_QUEUE_WAIT` seconds is dropped rather than queued forever — speech that arrives a minute late describes work you've already moved on from.
 
-## The neural voice (optional)
+## The neural voice
 
-`say` is instant and free but unmistakably synthetic. [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) sounds far more natural and is also free; the catch is that it needs a model in memory. claudesay keeps it warm **only while you're working**, and never makes you wait for it.
+You don't turn this on. If the machine can run it — Apple Silicon with [`uv`](https://docs.astral.sh/uv/) — claudesay uses [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) automatically and falls back to the built-in voice when it can't. There is no setting to get right.
 
-```jsonc
-// ~/.claude/settings.json
-{ "env": { "CLAUDESAY_ENGINE": "kokoro" } }
-```
-
-Needs [`uv`](https://docs.astral.sh/uv/) (`brew install uv`) and Apple Silicon. Nothing else — the first run pulls the model into uv's and Hugging Face's own caches.
+The catch with a neural voice is that it needs a model in memory. claudesay keeps it warm **only while you're working**, and never makes you wait for it.
 
 - **First turn after a quiet spell** is spoken by `say`, instantly, while the voice server warms in the background (~30s, once). You never wait on a model.
 - **Every turn after that** is neural, in ~0.7s.
@@ -173,14 +158,6 @@ Measured on an M3 Pro, a 187-char sentence → 11.5s of speech:
 | Cost | $0 | $0 |
 | Network | none | model download, once |
 
-```jsonc
-{ "env": {
-    "CLAUDESAY_ENGINE": "kokoro",
-    "CLAUDESAY_KOKORO_VOICE": "af_bella",   // af_heart, af_bella, am_michael, …
-    "CLAUDESAY_KOKORO_IDLE": "900"          // hold the model 15min instead of 5
-} }
-```
-
 <details>
 <summary>Why a server, and why MLX — the measurements behind those choices</summary>
 
@@ -194,11 +171,16 @@ Measured on an M3 Pro, a 187-char sentence → 11.5s of speech:
 
 ## Configuration
 
+**You shouldn't need this.** The defaults are chosen so there's nothing to set — engine, meeting detection, the queue and the hotkey all configure themselves. This table exists for the rare case where you want to override one on purpose.
+
+<details>
+<summary>Every environment variable</summary>
+
 Set these in `~/.claude/settings.json` under `env`, or in your shell.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `CLAUDESAY_ENGINE` | `say` | `say` or `kokoro`. An unrecognized value degrades to `say`. |
+| `CLAUDESAY_ENGINE` | `auto` | `auto` picks the best available. Force with `say` or `kokoro`. |
 | `CLAUDESAY_VOICE` | `Samantha` | Any macOS voice. `say -v '?'` lists them. |
 | `CLAUDESAY_RATE` | system | `say -r` words/min. Try `200`–`260` for snappier reads. |
 | `CLAUDESAY_DEBOUNCE` | `4` | Seconds between fires per session. |
@@ -219,6 +201,8 @@ Set these in `~/.claude/settings.json` under `env`, or in your shell.
 | `CLAUDESAY_DEBUG` | unset | Print every decision the hook makes to stderr. |
 | `CLAUDESAY_SILENT` | unset | Dry run: render speech to a file instead of playing it. |
 | `CLAUDESAY_STATE` | per-user `$TMPDIR` | Override the state directory. |
+
+</details>
 
 ## How it's wired
 
@@ -328,11 +312,11 @@ Linux/Windows ports welcome: see `claudesay.sh` for the contract and swap the `s
 ## Contributing
 
 ```bash
-./tests.sh                              # 45 tests, silent — renders instead of playing
+./tests.sh                              # 48 tests, silent — renders instead of playing
 CLAUDESAY_AUDIBLE_TESTS=1 ./tests.sh    # let it use the speakers
 ```
 
-The suite is silent by default on purpose: it's developed on a laptop that also joins meetings, and an early version once talked over a live call. See [CONTRIBUTING.md](CONTRIBUTING.md).
+The suite is silent by default on purpose: it's developed on a laptop that also joins meetings, and an early version once talked over a live call. See [CONTRIBUTING.md](CONTRIBUTING.md), and [AGENTS.md](AGENTS.md) if a coding agent is doing the work.
 
 ## License
 

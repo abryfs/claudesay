@@ -532,21 +532,58 @@ fire_engine() {
     return $rc
 }
 
-test_engine_defaults_to_say() {
+test_engine_default_resolves_without_config() {
+    # There is no "default engine" to memorize any more: unset means auto,
+    # and auto must always land on a concrete engine rather than a word.
     local state; state=$(mktemp -d)
     local out; out=$(fire_engine "$state" "e1" "A substantive sentence that should be spoken aloud now." 2>&1)
     /bin/sleep 0.3; killall say 2>/dev/null
     rm -rf "$state"
-    echo "$out" | grep -q "engine=say" || { echo "got: $out"; return 1; }
+    echo "$out" | grep -qE "engine=(say|kokoro)" || { echo "got: $out"; return 1; }
+    echo "$out" | grep -q "engine=auto" && { echo "auto leaked through unresolved"; return 1; }
+    return 0
 }
 
-test_unknown_engine_falls_back_to_say() {
+test_auto_engine_picks_neural_when_available() {
+    # The default must not be a decision. If the machine can run the neural
+    # voice, it runs it — no env var, no prompt.
+    local state; state=$(mktemp -d)
+    local out; out=$(fire_engine "$state" "au1" "All three tests pass and the deploy is ready whenever you want." \
+        CLAUDESAY_ENGINE=auto 2>&1)
+    rm -rf "$state"
+    if command -v uv >/dev/null 2>&1 && [[ "$(uname -m)" == "arm64" ]] && [[ -f "$ROOT/claudesay-voice.py" ]]; then
+        echo "$out" | grep -q "engine=kokoro" || { echo "auto did not pick the neural voice; got: $out"; return 1; }
+    else
+        echo "$out" | grep -q "engine=say" || { echo "auto should have picked say here; got: $out"; return 1; }
+    fi
+}
+
+test_auto_engine_falls_back_without_neural_support() {
+    local state; state=$(mktemp -d)
+    local out; out=$(fire_engine "$state" "au2" "All three tests pass and the deploy is ready whenever you want." \
+        CLAUDESAY_ENGINE=auto CLAUDESAY_VOICE_SCRIPT=/nonexistent 2>&1)
+    rm -rf "$state"
+    echo "$out" | grep -q "engine=say" \
+        || { echo "auto must degrade to say when the neural voice is unavailable; got: $out"; return 1; }
+}
+
+test_hotkey_helper_compiles() {
+    command -v swiftc >/dev/null 2>&1 || { echo "SKIP: no swiftc"; return 0; }
+    local out; out=$(mktemp -d)
+    swiftc -O -o "$out/hk" "$ROOT/claudesay-hotkey.swift" 2>&1 | head -5
+    local ok=0; [[ -x "$out/hk" ]] && ok=1
+    rm -rf "$out"
+    (( ok == 1 )) || { echo "claudesay-hotkey.swift failed to compile"; return 1; }
+}
+
+test_unknown_engine_still_speaks() {
+    # A typo in settings.json should cost you nothing at all.
     local state; state=$(mktemp -d)
     local out; out=$(fire_engine "$state" "e2" "A substantive sentence that should be spoken aloud now." \
         CLAUDESAY_ENGINE=nonsense 2>&1)
     /bin/sleep 0.3; killall say 2>/dev/null
     rm -rf "$state"
-    echo "$out" | grep -q "engine=say" || { echo "got: $out"; return 1; }
+    echo "$out" | grep -qE "engine=(say|kokoro)" || { echo "typo silenced the hook; got: $out"; return 1; }
 }
 
 # Assert the tracked PID is a *live* player of the expected command. Checking
@@ -848,8 +885,11 @@ run "unknown mic state still speaks (fail open)"    test_unknown_mic_state_still
 run "mic gate can be disabled"                      test_mic_gate_can_be_turned_off
 run "shipped mic probe answers sanely"              test_real_mic_probe_answers_sanely
 run "legacy hook path forwards to claudesay"        test_legacy_shim_forwards_to_claudesay
-run "engine defaults to say"                        test_engine_defaults_to_say
-run "unknown engine falls back to say"              test_unknown_engine_falls_back_to_say
+run "engine needs no config to resolve"             test_engine_default_resolves_without_config
+run "a typo in the engine name still speaks"        test_unknown_engine_still_speaks
+run "auto engine picks the best available"          test_auto_engine_picks_neural_when_available
+run "auto engine degrades without neural support"   test_auto_engine_falls_back_without_neural_support
+run "global hotkey helper compiles"                 test_hotkey_helper_compiles
 run "kokoro cold: falls back, still speaks"         test_kokoro_cold_falls_back_and_still_speaks
 run "kokoro warm: uses the voice server"            test_kokoro_warm_uses_server
 run "kokoro sends text verbatim (no @file read)"    test_kokoro_sends_text_literally_not_as_file_ref
