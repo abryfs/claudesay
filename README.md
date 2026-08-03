@@ -24,11 +24,19 @@ Or download [comparison.mp3](samples/0-comparison.mp3), [say](samples/1-say-sama
 
 ## Install
 
+Paste into Claude Code:
+
+> Install claudesay from https://github.com/abryfs/claudesay, following its AGENTS.md.
+
+It reads [AGENTS.md](AGENTS.md), which covers the non-TTY flag, the verification steps, and the failure modes worth checking.
+
+Or run it yourself:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/install.sh | bash
 ```
 
-Open a new Claude Code session and ask something. When the reply ends you'll hear the last sentence. Nothing to configure after this.
+Either way, open a new Claude Code session and ask something. When the reply ends you'll hear the last sentence. Nothing to configure after this.
 
 <details>
 <summary>Other ways in</summary>
@@ -38,8 +46,6 @@ curl -fsSL .../install.sh | bash -s -- --no-picker      # non-interactive
 curl -fsSL .../install.sh | bash -s -- --voice=Daniel   # pick a voice up front
 git clone https://github.com/abryfs/claudesay && cd claudesay && ./install.sh
 ```
-
-Have Claude Code do it: *"Install claudesay from https://github.com/abryfs/claudesay, following its AGENTS.md."* That file covers the non-TTY flag, the verification steps, and the failure modes worth checking.
 
 In a terminal, the installer opens a voice picker that auditions each macOS voice as you arrow through it. Without a TTY it uses Samantha unless you pass `--voice=`.
 
