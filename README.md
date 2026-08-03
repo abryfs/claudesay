@@ -5,7 +5,9 @@
 [![license](https://img.shields.io/github/license/abryfs/claudesay)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-only-blue)
 
-**Tasteful voice notifications for Claude Code.** A single bash hook that speaks the meaningful end of Claude's reply when a turn finishes — and stays silent the rest of the time. Pure macOS `say`. No API keys, no daemon, no per-call cost.
+**Tasteful voice notifications for Claude Code.** A single bash hook that speaks the meaningful end of Claude's reply when a turn finishes — and stays silent the rest of the time. Pure macOS `say` by default. No API keys, no per-call cost.
+
+Want a neural voice instead? `CLAUDESAY_ENGINE=kokoro` runs [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) locally — still free, still no API key, and it **releases its memory when you stop working**. See [Neural voice](#neural-voice-optional).
 
 ## Install
 
@@ -75,10 +77,11 @@ Claude Code 2.1 still ships **no native TTS** ([feature request #50720](https://
 
 claudesay is the smallest thing that actually works:
 
-- **The core hook is ~170 lines of bash.** Read it. Audit it. Modify it.
-- **macOS built-ins only** — `say` + `jq`. Zero install footprint.
+- **The core hook is one readable bash file.** Read it. Audit it. Modify it.
+- **macOS built-ins by default** — `say` + `jq`. Zero install footprint.
 - **Quiet by default.** It doesn't speak unless Claude said something worth hearing.
-- **$0/month forever.** No subscription, no key, no quota.
+- **$0/month forever.** No subscription, no key, no quota — including the neural voice.
+- **A better voice never costs you latency or idle RAM.** Kokoro is opt-in, warms in the background, and exits when you stop working. `say` covers every gap.
 - **Security-conscious:** validates `$VOICE` argv to prevent flag injection, scopes state to a private per-user dir under `$TMPDIR` (not world-writable `/tmp`), refuses to follow symlinked state files, atomic-renames `settings.json` so you can't end up with a half-written config.
 
 ## What it speaks (and what it doesn't)
@@ -92,7 +95,7 @@ claudesay is the smallest thing that actually works:
 | Same response twice in a row | **Skipped** *(deduped)* |
 | Stop fires twice in 4s *(pipeline pause)* | Second one **skipped** *(debounced)* |
 | Tool-use-only assistant turn *(no prose)* | **Skipped** |
-| You start typing while it speaks | **Cut off** *(barge-in via `killall say`)* |
+| You start typing while it speaks | **Cut off** *(barge-in, PID-tracked per session)* |
 
 ## Voice picker
 
@@ -118,6 +121,50 @@ Each ↑/↓ kills the current preview and starts a new `say -v <voice>` so you 
 
 If you don't have a TTY (e.g. running through Claude Code's Bash tool), the picker auto-falls-back to `Samantha` unless you pass `--voice=<name>`.
 
+## Neural voice (optional)
+
+`say` is instant and free but unmistakably synthetic. Kokoro-82M sounds far more natural and is also free — the catch is that it needs a model in memory. claudesay's answer is to keep the model warm **only while you're actually working**, and to never make you wait for it.
+
+```jsonc
+// ~/.claude/settings.json
+{ "env": { "CLAUDESAY_ENGINE": "kokoro" } }
+```
+
+Requires [`uv`](https://docs.astral.sh/uv/) (`brew install uv`). Nothing else to install — the first run fetches the model and Python deps into uv's and Hugging Face's own caches.
+
+**How it behaves:**
+
+- **First turn after a quiet spell** is spoken by `say`, instantly, while the voice server warms in the background (~30s, once). You are never left waiting on a model.
+- **Every turn after that** is Kokoro, in ~0.7s.
+- **After 5 minutes of silence** the server exits and gives the memory back. Next turn starts the cycle again — one `say` turn, then neural.
+- **Anything that goes wrong** — server down, synthesis error, timeout, no `uv` — falls back to `say`. The failure mode is a worse voice, never silence.
+
+**Measured on an M3 Pro** (187-char sentence → 11.5s of speech):
+
+| | `say` | `kokoro` |
+|---|---|---|
+| Time to audio | instant | **0.66s** warm · instant (via `say`) when cold |
+| Resident memory | 0 | **~460 MB** warm · **0 when idle** |
+| Peak during model load | — | ~740 MB, once per warm-up |
+| Cost | $0 | $0 |
+| Network | none | model download, once |
+
+Memory is flat across use (457 MB → 460 MB over 15 utterances), so it does not creep the way a long-lived TTS server can.
+
+**Why a server and not just one process per turn?** Because per-turn is unusable: synthesis is fast (~0.8s) but importing the ML stack and loading the model costs ~3s *every time*, so a fresh process per turn measured ~4s before you hear anything. The server pays that once; idle-exit is what keeps "warm" from meaning "resident forever."
+
+**Why MLX and not ONNX?** Measured on the same machine and sentence: MLX 0.76s, ONNX fp32 2.51s, ONNX int8 4.69s. Quantized int8 is *slower* than fp32 on Apple Silicon, and CoreML is slower than plain CPU because it can only claim a fraction of the graph. MLX uses the GPU and wins by ~3.8x.
+
+Tune it:
+
+```jsonc
+{ "env": {
+    "CLAUDESAY_ENGINE": "kokoro",
+    "CLAUDESAY_KOKORO_VOICE": "af_bella",   // af_heart, af_bella, am_michael, …
+    "CLAUDESAY_KOKORO_IDLE": "900"          // hold the model 15min instead of 5
+} }
+```
+
 ## Configuration
 
 Set env vars in `~/.claude/settings.json` (or your shell):
@@ -132,6 +179,11 @@ Set env vars in `~/.claude/settings.json` (or your shell):
 | `CLAUDESAY_DISABLE` | unset | Set to anything to silence without uninstalling. |
 | `CLAUDESAY_DEBUG` | unset | Set to anything to print every decision the hook makes to stderr (handy for "why didn't it speak?"). |
 | `CLAUDESAY_STATE` | per-user `$TMPDIR` | Override the state directory location. |
+| `CLAUDESAY_ENGINE` | `say` | `say` or `kokoro`. An unrecognized value degrades to `say`. |
+| `CLAUDESAY_KOKORO_VOICE` | `af_heart` | Kokoro voice name. |
+| `CLAUDESAY_KOKORO_IDLE` | `300` | Seconds of silence before the voice server exits. `0` never exits. |
+| `CLAUDESAY_KOKORO_PORT` | `8787` | Loopback port for the voice server. |
+| `CLAUDESAY_KOKORO_TIMEOUT` | `10` | Seconds to wait for synthesis before falling back to `say`. |
 
 Example settings.json snippet:
 
@@ -241,7 +293,25 @@ Three independent guards stack:
 
 Then it dedupes on a content hash, strips markdown + ANSI escapes so `say` doesn't read literal asterisks or color codes, and speaks the last sentence ≥15 chars (where summaries and questions land).
 
-State lives in `${TMPDIR}/claudesay-<uid>/<session_id>.{last,hash,pid}` with mode `0700`. Wiped on reboot. Override with `CLAUDESAY_STATE`. Barge-in is PID-tracked per session — interrupting your speech doesn't kill `say` invocations from other apps or other Claude sessions.
+State lives in `${TMPDIR}/claudesay-<uid>/<session_id>.{last,hash,pid}` with mode `0700` (plus `.wav` when the kokoro engine is on, and a shared `voice.log`). Wiped on reboot. Override with `CLAUDESAY_STATE`. Barge-in is PID-tracked per session and checks the process is still a `say`/`afplay` before signalling it — interrupting your speech doesn't kill playback from other apps or other Claude sessions.
+
+### Neural voice won't start
+
+```bash
+# 1. Is uv installed?
+command -v uv || brew install uv
+
+# 2. Ask the hook directly — it reports whether the server is warm.
+CLAUDESAY_ENGINE=kokoro ~/.claude/hooks/claudesay.sh --test
+
+# 3. Read the server's own log.
+cat "${TMPDIR}/claudesay-$(id -u)/voice.log"
+
+# 4. Is it listening?
+curl -sS http://127.0.0.1:8787/health
+```
+
+The first `--test` after a quiet spell always reports "cold" and speaks via `say` — that's the design, not a fault. Wait ~30s and run it again. If it's still cold, the log will say why (most often: `uv` missing, or the model download failed).
 
 ## Why not [other thing]
 
@@ -249,15 +319,18 @@ State lives in `${TMPDIR}/claudesay-<uid>/<session_id>.{last,hash,pid}` with mod
 - **[peon-ping](https://github.com/PeonPing/peon-ping)** — sound effects, not speech. Different niche.
 - **[VoiceMode](https://github.com/mbailey/voicemode)** — full two-way conversation via MCP + Whisper + Kokoro. Heavier, breaks on Claude Code 2.1.105+. Use if you want duplex.
 - **[AgentVibes](https://github.com/paulpreibisch/AgentVibes)** — feature-rich (904 Piper voices, per-LLM routing, FX). Use if you want the kitchen sink.
+- **[claude-code-tts](https://github.com/ktaletsk/claude-code-tts)** — Kokoro via a per-turn CLI. Same model, no server — which means paying model load on every single turn.
+- **[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)** — the general-purpose Kokoro server. Great building block, but it's a container you start and it stays resident (with a documented memory leak under sustained use). claudesay's server starts itself and exits itself.
 - **[claude-code-hooks-mastery](https://github.com/disler/claude-code-hooks-mastery)** — reference patterns; great to study, larger to deploy.
 
 claudesay is what you want when you just want Claude to talk to you sensibly without any of the above.
 
 ## Requirements
 
-- macOS (uses `/usr/bin/say`)
+- macOS (uses `/usr/bin/say` and `/usr/bin/afplay`)
 - `jq` — `brew install jq` if missing
 - Claude Code 2.x (tested on 2.1.123)
+- *For the neural voice only:* [`uv`](https://docs.astral.sh/uv/) and an Apple Silicon Mac (MLX). Intel Macs stay on `say`.
 
 Linux / Windows ports welcome — see `claudesay.sh` for the contract; swap the `say` invocation for `espeak-ng` or PowerShell `Add-Type … SpeechSynthesizer`.
 

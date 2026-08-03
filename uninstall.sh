@@ -5,6 +5,7 @@ set -euo pipefail
 
 HOOKS_DIR="$HOME/.claude/hooks"
 SCRIPT_PATH="$HOOKS_DIR/claudesay.sh"
+VOICE_PATH="$HOOKS_DIR/claudesay-voice.py"
 LEGACY_PATH="$HOOKS_DIR/voice-notify.sh"
 SETTINGS="$HOME/.claude/settings.json"
 
@@ -48,6 +49,17 @@ fi
 
 rm -f "$SCRIPT_PATH"
 echo "✓ removed $SCRIPT_PATH"
+
+# Stop a running voice server before deleting its script, otherwise it lingers
+# holding the model until its idle timer happens to fire. Matched on the full
+# script path so we never signal an unrelated process.
+if pkill -f "$VOICE_PATH" 2>/dev/null; then
+    echo "✓ stopped the running voice server"
+fi
+if [[ -f "$VOICE_PATH" ]]; then
+    rm -f "$VOICE_PATH"
+    echo "✓ removed $VOICE_PATH"
+fi
 
 # Clean up state files. Both default state-dir layouts are removed:
 # the per-user one (TMPDIR-based) and the v0.1 one under /tmp.

@@ -4,11 +4,12 @@
 
 set -euo pipefail
 
-CLAUDESAY_VERSION="0.3.0"
+CLAUDESAY_VERSION="0.4.0"
 
 REPO_RAW="${CLAUDESAY_RAW:-https://raw.githubusercontent.com/abryfs/claudesay/main}"
 HOOKS_DIR="$HOME/.claude/hooks"
 SCRIPT_PATH="$HOOKS_DIR/claudesay.sh"
+VOICE_PATH="$HOOKS_DIR/claudesay-voice.py"
 SETTINGS="$HOME/.claude/settings.json"
 HOOK_TIMEOUT_SEC=15
 
@@ -75,6 +76,22 @@ else
 fi
 chmod +x "$SCRIPT_PATH"
 echo "✓ installed $SCRIPT_PATH"
+
+# The optional neural voice server ships alongside the hook, which looks for it
+# as a sibling. It is inert unless CLAUDESAY_ENGINE=kokoro, so installing it
+# always costs nothing and saves a second install step for anyone who opts in.
+if [[ -n "$SELF_DIR" && -f "$SELF_DIR/claudesay-voice.py" ]]; then
+    cp "$SELF_DIR/claudesay-voice.py" "$VOICE_PATH"
+else
+    curl -fsSL "$REPO_RAW/claudesay-voice.py" -o "$VOICE_PATH" || true
+fi
+if [[ -s "$VOICE_PATH" ]]; then
+    chmod +x "$VOICE_PATH"
+    echo "✓ installed $VOICE_PATH (neural voice — set CLAUDESAY_ENGINE=kokoro to use)"
+else
+    rm -f "$VOICE_PATH"
+    echo "  (skipped the optional neural voice server — say engine works regardless)"
+fi
 
 # ─── 2. Pick a voice (interactive arrow-key TUI with live preview) ───────────
 SELECTED_VOICE=""

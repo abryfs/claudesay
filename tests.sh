@@ -8,7 +8,7 @@
 set -uo pipefail
 shopt -s expand_aliases
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 ROOT="$PWD"
 HOOK="$ROOT/claudesay.sh"
 INSTALLER="$ROOT/install.sh"
@@ -213,6 +213,232 @@ test_installer_rejects_dash_voice() {
     return 1
 }
 
+# ─── Section: engine layer ──────────────────────────────────────────────────
+# These never load a model. A stub server stands in for claudesay-voice.py so
+# the suite stays hermetic and offline: what's under test is the hook's engine
+# dispatch, fallback, and request encoding — not Kokoro itself.
+
+STUB_PORT=18787
+
+# Kill whatever is listening on the stub port. Without this a leaked stub from
+# an interrupted run poisons every later run: the new stub fails to bind and
+# dies, but start_stub's health probe succeeds against the *stale* server, so
+# tests silently exercise a zombie instead of the one they configured.
+reap_stub_port() {
+    local pids
+    pids=$(lsof -ti "TCP:$STUB_PORT" -sTCP:LISTEN 2>/dev/null) || true
+    [[ -n "$pids" ]] || return 0
+    echo "$pids" | xargs -r kill -9 2>/dev/null
+    /bin/sleep 0.2
+}
+
+start_stub() {
+    # start_stub <mode: ok|fail> <capture-file>
+    reap_stub_port
+    python3 - "$STUB_PORT" "$1" "$2" <<'PY' >/dev/null 2>&1 &
+import io, sys, wave
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port, mode, capture = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def do_GET(self):
+        self.send_response(200); self.send_header("Content-Length", "2")
+        self.end_headers(); self.wfile.write(b"ok")
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        with open(capture, "wb") as fh:
+            fh.write(self.rfile.read(n))
+        if mode == "fail":
+            self.send_response(500); self.send_header("Content-Length", "0")
+            self.end_headers(); return
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+            w.writeframes(b"\x00\x00" * 2400)   # 0.1s of silence
+        data = buf.getvalue()
+        self.send_response(200); self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers(); self.wfile.write(data)
+
+HTTPServer(("127.0.0.1", port), H).serve_forever()
+PY
+    STUB_PID=$!
+    for _ in $(seq 1 40); do
+        curl -fsS --max-time 1 -o /dev/null "http://127.0.0.1:$STUB_PORT/health" 2>/dev/null && return 0
+        /bin/sleep 0.1
+    done
+    return 1
+}
+
+stop_stub() {
+    [[ -n "${STUB_PID:-}" ]] && kill "$STUB_PID" 2>/dev/null
+    wait "$STUB_PID" 2>/dev/null
+    STUB_PID=""
+    # Belt and braces: a test that dies between start and stop must not leave
+    # the port held, or it poisons the rest of the suite.
+    reap_stub_port
+}
+
+fire_engine() {
+    # fire_engine <state> <sid> <text> [extra env assignments...]
+    local state="$1" sid="$2" text="$3"; shift 3
+    local jsonl; jsonl=$(mktemp)
+    mk_jsonl "$text" >"$jsonl"
+    env CLAUDESAY_STATE="$state" CLAUDESAY_DEBUG=1 "$@" \
+        bash "$HOOK" <<<"$(printf '{"transcript_path":"%s","session_id":"%s","stop_hook_active":false}' "$jsonl" "$sid")"
+    local rc=$?
+    rm -f "$jsonl"
+    return $rc
+}
+
+test_engine_defaults_to_say() {
+    local state; state=$(mktemp -d)
+    local out; out=$(fire_engine "$state" "e1" "A substantive sentence that should be spoken aloud now." 2>&1)
+    /bin/sleep 0.3; killall say 2>/dev/null
+    rm -rf "$state"
+    echo "$out" | grep -q "engine=say" || { echo "got: $out"; return 1; }
+}
+
+test_unknown_engine_falls_back_to_say() {
+    local state; state=$(mktemp -d)
+    local out; out=$(fire_engine "$state" "e2" "A substantive sentence that should be spoken aloud now." \
+        CLAUDESAY_ENGINE=nonsense 2>&1)
+    /bin/sleep 0.3; killall say 2>/dev/null
+    rm -rf "$state"
+    echo "$out" | grep -q "engine=say" || { echo "got: $out"; return 1; }
+}
+
+# Assert the tracked PID is a *live* player of the expected command. Checking
+# only that the .pid file exists is vacuous: a hook that speaks nothing still
+# writes an empty one, so such a test passes against broken fallback code.
+assert_live_player() {
+    # assert_live_player <pid-file> <expected comm>
+    local pid_file="$1" want="$2" pid="" comm=""
+    [[ -f "$pid_file" ]] || { echo "no pid file"; return 1; }
+    pid=$(cat "$pid_file" 2>/dev/null)
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "pid file empty or non-numeric: '$pid'"; return 1; }
+    comm=$(ps -p "$pid" -o comm= 2>/dev/null)
+    comm="${comm##*/}"
+    [[ "$comm" == "$want" ]] || { echo "pid $pid is '${comm:-dead}', expected '$want'"; return 1; }
+}
+
+test_kokoro_cold_falls_back_and_still_speaks() {
+    # Nothing listening on the port: the turn must still be spoken by `say`.
+    local state; state=$(mktemp -d)
+    fire_engine "$state" "e3" "A substantive sentence that should be spoken aloud now." \
+        CLAUDESAY_ENGINE=kokoro CLAUDESAY_KOKORO_PORT=9 CLAUDESAY_VOICE_SCRIPT=/nonexistent >/dev/null 2>&1
+    local err; err=$(assert_live_player "$state/e3.pid" say) || {
+        killall say 2>/dev/null; rm -rf "$state"; echo "$err"; return 1
+    }
+    [[ -f "$state/e3.hash" ]] || { killall say 2>/dev/null; rm -rf "$state"; echo "no hash written"; return 1; }
+    killall say 2>/dev/null; rm -rf "$state"
+}
+
+test_kokoro_warm_uses_server() {
+    local state; state=$(mktemp -d)
+    local cap="$state/body.txt"
+    start_stub ok "$cap" || { rm -rf "$state"; echo "stub failed to start"; return 1; }
+    killall say 2>/dev/null   # start from a known-clean slate
+    fire_engine "$state" "e4" "All three tests pass and the migration completed cleanly." \
+        CLAUDESAY_ENGINE=kokoro CLAUDESAY_KOKORO_PORT="$STUB_PORT" >/dev/null 2>&1
+
+    # Deliberately not "is afplay still alive": on a headless CI runner with no
+    # audio device afplay can exit immediately, which would make this flaky.
+    # These three together still pin the behavior — a hook that silently played
+    # nothing has no PID, and one that fell through to `say` leaves a `say`.
+    local pid=""; [[ -f "$state/e4.pid" ]] && pid=$(cat "$state/e4.pid" 2>/dev/null)
+    local say_running=0; pgrep -x say >/dev/null 2>&1 && say_running=1
+    local body=""; [[ -f "$cap" ]] && body=$(cat "$cap")
+    local wav_ok=0; [[ -s "$state/e4.wav" ]] && wav_ok=1
+
+    killall afplay say 2>/dev/null
+    stop_stub
+    rm -rf "$state"
+
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "no player PID recorded (pid='$pid')"; return 1; }
+    [[ "$say_running" == "0" ]] || { echo "fell back to say despite a warm server"; return 1; }
+    [[ -n "$body" ]] || { echo "voice server never received the text"; return 1; }
+    [[ "$wav_ok" == "1" ]] || { echo "no wav written from the server response"; return 1; }
+}
+
+test_kokoro_sends_text_literally_not_as_file_ref() {
+    # curl reads a leading '@' in an inline --data value as a filename. A reply
+    # ending in a sentence like "@/etc/passwd is the file." must be transmitted
+    # verbatim, never expanded into file contents.
+    local state; state=$(mktemp -d)
+    local cap="$state/body.txt"
+    start_stub ok "$cap" || { rm -rf "$state"; echo "stub failed to start"; return 1; }
+    fire_engine "$state" "e5" "@/etc/passwd is the file that this sentence happens to mention." \
+        CLAUDESAY_ENGINE=kokoro CLAUDESAY_KOKORO_PORT="$STUB_PORT" >/dev/null 2>&1
+    /bin/sleep 0.4; killall afplay 2>/dev/null
+    stop_stub
+    local body=""; [[ -f "$cap" ]] && body=$(cat "$cap")
+    rm -rf "$state"
+    if [[ "$body" != *"@/etc/passwd"* ]]; then
+        echo "text not sent verbatim; got: ${body:0:80}"
+        return 1
+    fi
+    if [[ "$body" == *"root:"* ]]; then
+        echo "FILE CONTENTS LEAKED into request body"
+        return 1
+    fi
+}
+
+test_kokoro_wav_symlink_replaced_not_followed() {
+    # curl -o follows a symlink at the destination. A planted .wav.part must be
+    # replaced, not written through to whatever it points at.
+    local state; state=$(mktemp -d)
+    local cap="$state/body.txt" victim="$state/victim"
+    : >"$victim"
+    ln -sf "$victim" "$state/e8.wav.part"
+    start_stub ok "$cap" || { rm -rf "$state"; echo "stub failed to start"; return 1; }
+    fire_engine "$state" "e8" "All three tests pass and the migration completed cleanly." \
+        CLAUDESAY_ENGINE=kokoro CLAUDESAY_KOKORO_PORT="$STUB_PORT" >/dev/null 2>&1
+    /bin/sleep 0.4; killall afplay 2>/dev/null
+    stop_stub
+    local leaked=0 still_link=0
+    [[ -s "$victim" ]] && leaked=1
+    [[ -L "$state/e8.wav.part" ]] && still_link=1
+    rm -rf "$state"
+    [[ "$leaked" == "0" && "$still_link" == "0" ]] \
+        || { echo "victim written through symlink (leaked=$leaked still_link=$still_link)"; return 1; }
+}
+
+test_kokoro_server_error_falls_back_to_say() {
+    local state; state=$(mktemp -d)
+    local cap="$state/body.txt"
+    start_stub fail "$cap" || { rm -rf "$state"; echo "stub failed to start"; return 1; }
+    local out; out=$(fire_engine "$state" "e6" "A substantive sentence that should be spoken aloud now." \
+        CLAUDESAY_ENGINE=kokoro CLAUDESAY_KOKORO_PORT="$STUB_PORT" 2>&1)
+    stop_stub
+    # The load-bearing assertion: a real `say` must be speaking. The debug line
+    # alone proves only that we noticed the failure, not that we recovered.
+    local err; err=$(assert_live_player "$state/e6.pid" say) || {
+        killall say 2>/dev/null; rm -rf "$state"; echo "$err; hook said: $out"; return 1
+    }
+    killall say 2>/dev/null; rm -rf "$state"
+}
+
+test_kokoro_bad_port_is_sanitized() {
+    local state; state=$(mktemp -d)
+    fire_engine "$state" "e7" "A substantive sentence that should be spoken aloud now." \
+        CLAUDESAY_ENGINE=kokoro CLAUDESAY_KOKORO_PORT='8787; touch /tmp/claudesay_pwned_port' \
+        CLAUDESAY_VOICE_SCRIPT=/nonexistent >/dev/null 2>&1
+    /bin/sleep 0.3; killall say 2>/dev/null
+    rm -rf "$state"
+    if [[ -f /tmp/claudesay_pwned_port ]]; then
+        rm -f /tmp/claudesay_pwned_port
+        echo "port injection executed"
+        return 1
+    fi
+}
+
+test_voice_server_script_is_valid_python() {
+    python3 -c "import ast,sys; ast.parse(open('$ROOT/claudesay-voice.py').read())"
+}
+
 # ─── Section: installer / uninstaller ───────────────────────────────────────
 test_installer_idempotent() {
     local home; home=$(mktemp -d)
@@ -257,6 +483,31 @@ test_installer_refuses_broken_json() {
     [[ "$rc" -ne 0 ]] && echo "$out" | grep -q "not valid JSON"
 }
 
+test_installer_places_voice_server() {
+    # Without this the kokoro engine can never work for anyone who installs
+    # normally: the hook looks for the server as a sibling of itself.
+    local home; home=$(mktemp -d)
+    mkdir -p "$home/.claude"
+    echo '{}' >"$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALLER" --no-picker >/dev/null 2>&1
+    local ok=0
+    [[ -s "$home/.claude/hooks/claudesay-voice.py" ]] && ok=1
+    rm -rf "$home"
+    [[ "$ok" == "1" ]] || { echo "claudesay-voice.py not installed next to the hook"; return 1; }
+}
+
+test_uninstaller_removes_voice_server() {
+    local home; home=$(mktemp -d)
+    mkdir -p "$home/.claude"
+    echo '{}' >"$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALLER" --no-picker >/dev/null 2>&1
+    HOME="$home" bash "$UNINSTALLER" >/dev/null 2>&1
+    local left=0
+    [[ -e "$home/.claude/hooks/claudesay-voice.py" ]] && left=1
+    rm -rf "$home"
+    [[ "$left" == "0" ]] || { echo "voice server left behind after uninstall"; return 1; }
+}
+
 test_uninstaller_preserves_unrelated_hooks() {
     local home; home=$(mktemp -d)
     mkdir -p "$home/.claude"
@@ -273,6 +524,14 @@ EOF
 }
 
 # ─── Run all ────────────────────────────────────────────────────────────────
+# Leave no stub server, and no speech, behind — even on Ctrl-C.
+cleanup_all() {
+    killall say afplay 2>/dev/null
+    reap_stub_port
+}
+trap cleanup_all EXIT INT TERM
+cleanup_all
+
 echo
 printf '%s\n' "$(c_dim 'claudesay test suite')"
 echo
@@ -296,10 +555,22 @@ run "voice with apostrophe is accepted"             test_voice_with_apostrophe_k
 run "voice starting with '-' is rejected"           test_voice_with_leading_dash_rejected
 run "installer rejects --voice=-foo"                test_installer_rejects_dash_voice
 
+run "engine defaults to say"                        test_engine_defaults_to_say
+run "unknown engine falls back to say"              test_unknown_engine_falls_back_to_say
+run "kokoro cold: falls back, still speaks"         test_kokoro_cold_falls_back_and_still_speaks
+run "kokoro warm: uses the voice server"            test_kokoro_warm_uses_server
+run "kokoro sends text verbatim (no @file read)"    test_kokoro_sends_text_literally_not_as_file_ref
+run "kokoro: replaces planted wav symlink"        test_kokoro_wav_symlink_replaced_not_followed
+run "kokoro 500: falls back to say"                 test_kokoro_server_error_falls_back_to_say
+run "kokoro port env is sanitized"                  test_kokoro_bad_port_is_sanitized
+run "voice server script parses as Python"          test_voice_server_script_is_valid_python
+
 run "installer is idempotent"                       test_installer_idempotent
 run "installer omits matcher field"                 test_installer_no_matcher_field
 run "installer writes timeout: 15"                  test_installer_writes_timeout
 run "installer refuses broken settings.json"        test_installer_refuses_broken_json
+run "installer places the voice server"             test_installer_places_voice_server
+run "uninstaller removes the voice server"          test_uninstaller_removes_voice_server
 run "uninstaller preserves unrelated hooks"         test_uninstaller_preserves_unrelated_hooks
 
 echo
