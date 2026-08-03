@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="samples/hero.png" alt="claudesay — Claude Code tells you the one sentence that matters" width="100%">
+</p>
+
 # claudesay
 
 [![tests](https://github.com/abryfs/claudesay/actions/workflows/test.yml/badge.svg)](https://github.com/abryfs/claudesay/actions/workflows/test.yml)
