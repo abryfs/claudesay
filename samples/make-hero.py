@@ -28,11 +28,15 @@ AUDIO = HERE / "2-kokoro-af-heart.mp3"
 W, H = 1200, 630
 SCALE = 2  # supersample, then downscale — cheap antialiasing for the bars
 
-CANVAS = (8, 9, 11)        # #08090b
-INK = (220, 217, 210)      # #dcd9d2
-INK_DIM = (126, 122, 114)  # #7e7a72
-INK_FAINT = (94, 90, 82)   # #5e5a52
-CLAY = (201, 133, 98)      # #c98562
+# claudesay's own palette — deliberately cool. A voice tool's accent should read
+# as a signal light, not as warm paper; it also keeps this visually distinct from
+# other projects in the author's shelf.
+CANVAS = (10, 12, 15)      # #0a0c0f  cool near-black
+INK = (242, 244, 243)      # #f2f4f3
+INK_DIM = (124, 133, 142)  # #7c858e
+INK_FAINT = (74, 82, 90)   # #4a525a
+SIGNAL = (95, 227, 179)    # #5fe3b3  luminous mint — used only on the spoken part
+SIGNAL_HOT = (168, 245, 214)  # #a8f5d6  the peak core
 
 FONT_CANDIDATES = [
     "/tmp/fonts/DMSans.ttf",
@@ -84,32 +88,44 @@ def main() -> int:
     bars = 96
     env = envelope(AUDIO, bars)
 
-    # Waveform: centered band, clay, with a soft falloff at both ends so it
-    # reads as an excerpt rather than a clipped file.
+    # Waveform band, centered.
     band_cy = int(H * 0.605) * s
     max_h = int(H * 0.135) * s   # keep the band clear of both text lines
     left, right = int(W * 0.10) * s, int(W * 0.90) * s
     step = (right - left) / bars
     bar_w = max(2 * s, int(step * 0.42))
 
+    # The idea, not decoration: the whole reply is the dim waveform; only the
+    # stretch claudesay actually speaks is lit. That is the product in one image.
+    spoken_lo, spoken_hi = int(bars * 0.34), int(bars * 0.78)
+
     for i, v in enumerate(env):
-        falloff = min(1.0, min(i, bars - 1 - i) / (bars * 0.18))
-        h = max(2 * s, int(max_h * (0.12 + 0.88 * v) * (0.35 + 0.65 * falloff)))
+        spoken = spoken_lo <= i <= spoken_hi
+        # Ease the lit region in and out so it reads as emphasis, not a crop.
+        if spoken:
+            edge = min(i - spoken_lo, spoken_hi - i)
+            lit = min(1.0, edge / max(1.0, bars * 0.06))
+        else:
+            lit = 0.0
+
+        h = max(2 * s, int(max_h * (0.10 + 0.90 * v) * (0.42 + 0.58 * (0.35 + 0.65 * lit))))
         x = int(left + i * step)
-        # Fade the extremes toward ink-faint so the accent stays scarce.
-        t = 0.45 + 0.55 * falloff
-        color = tuple(int(INK_FAINT[c] + (CLAY[c] - INK_FAINT[c]) * t) for c in range(3))
+
+        base = INK_FAINT
+        target = tuple(int(SIGNAL[c] + (SIGNAL_HOT[c] - SIGNAL[c]) * v) for c in range(3))
+        color = tuple(int(base[c] + (target[c] - base[c]) * lit) for c in range(3))
+
         d.rounded_rectangle(
             [x, band_cy - h, x + bar_w, band_cy + h],
             radius=bar_w // 2, fill=color,
         )
 
-    # Wordmark, with the clay period the app itself uses.
+    # Wordmark. The period takes the signal colour — the one mark that speaks.
     f_mark = load_font(76 * s, weight=700)
     mark_x, mark_y = int(W * 0.10) * s, int(H * 0.155) * s
     d.text((mark_x, mark_y), "claudesay", font=f_mark, fill=INK)
     mark_w = d.textlength("claudesay", font=f_mark)
-    d.text((mark_x + mark_w, mark_y), ".", font=f_mark, fill=CLAY)
+    d.text((mark_x + mark_w, mark_y), ".", font=f_mark, fill=SIGNAL)
 
     # One line of promise, and one of mechanism.
     f_sub = load_font(30 * s, weight=500)
