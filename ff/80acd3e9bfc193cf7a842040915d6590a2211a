@@ -1,0 +1,35 @@
+AGENTS.md
+  s_f012f4a76d99dc::t_643a2d5401de30 1-100
+README.md
+  s_f012f4a76d99dc::t_a39b06ef77f551 31-38,43-45,48,51-52,56,58
+  s_f012f4a76d99dc::t_2c27b202d1e78f 128,130,140,142,144,174-178,183,205-206,315,319
+claudesay-hotkey.swift
+  s_f012f4a76d99dc::t_7da935cab326cd 1-72
+claudesay.sh
+  s_f012f4a76d99dc::t_046a5db85299ce 186,189-190,192-206
+  s_f012f4a76d99dc::t_7d5de9eda930ef 26,40,131-132,176
+CHANGELOG.md
+  s_f012f4a76d99dc::t_e94c1f053588e5 7-40
+install.sh
+  s_f012f4a76d99dc::t_c200782c2d3b43 7,91,113-171
+tests.sh
+  s_f012f4a76d99dc::t_4d969a39d96ece 535-537,542-576,579-580,586,888-892
+uninstall.sh
+  s_f012f4a76d99dc::t_5b8d7286dbe4ab 64-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "ff80acd3e9bfc193cf7a842040915d6590a2211a",
+  "prompts": {},
+  "sessions": {
+    "s_f012f4a76d99dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9af724f0-d713-4e0b-be87-32ebbde2ed86",
+        "model": "claude-opus-5"
+      },
+      "human_author": "abryfs <69842068+abryfs@users.noreply.github.com>"
+    }
+  }
+}
