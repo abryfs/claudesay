@@ -17,6 +17,12 @@ UNINSTALLER="$ROOT/uninstall.sh"
 VERBOSE=""
 [[ "${1:-}" == "-v" ]] && VERBOSE=1
 
+# Tests render instead of playing unless you opt in. A suite that grabs the
+# speakers is unusable on a laptop that also joins meetings.
+#   CLAUDESAY_AUDIBLE_TESTS=1 ./tests.sh   # let it actually make noise
+TEST_SILENT=1
+[[ -n "${CLAUDESAY_AUDIBLE_TESTS:-}" ]] && TEST_SILENT=""
+
 PASS=0
 FAIL=0
 FAILED_TESTS=()
@@ -55,8 +61,12 @@ fire_hook() {
     mk_jsonl "$text" >"$jsonl"
     local stop_input
     stop_input=$(printf '{"transcript_path":"%s","session_id":"%s","stop_hook_active":false}' "$jsonl" "$sid")
-    CLAUDESAY_STATE="$state" \
-    CLAUDESAY_DEBUG=1 \
+    # Pin the engine and clear ambient config so these tests assert the hook's
+    # behavior, not the developer's settings.json.
+    env -u CLAUDESAY_VOICE -u CLAUDESAY_RATE -u CLAUDESAY_DISABLE \
+        CLAUDESAY_ENGINE=say CLAUDESAY_STATE="$state" CLAUDESAY_DEBUG=1 \
+        CLAUDESAY_SILENT="$TEST_SILENT" \
+        CLAUDESAY_MUTE_WHEN_MIC=0 CLAUDESAY_MUTE_FILE=/nonexistent-mute \
         bash "$HOOK" <<<"$stop_input"
     local rc=$?
     rm -f "$jsonl"
@@ -213,6 +223,224 @@ test_installer_rejects_dash_voice() {
     return 1
 }
 
+# ─── Section: the documented example ────────────────────────────────────────
+test_readme_example_selects_last_sentence() {
+    # The README shows a specific message and claims a specific sentence is
+    # spoken. An early draft of that section claimed two sentences and was
+    # wrong. Pin it, so the docs cannot drift from the behavior again.
+    local state; state=$(mktemp -d)
+    local msg="I've updated the migration to backfill in batches of 500 instead of all at once, added an index on events.team_id, and re-ran the suite. All three tests pass and the migration completed cleanly, so this is ready to deploy to staging whenever you want."
+    local want="All three tests pass and the migration completed cleanly, so this is ready to deploy to staging whenever you want."
+    local jsonl; jsonl=$(mktemp)
+    mk_jsonl "$msg" >"$jsonl"
+    local out
+    # Same isolation as fire_hook: render instead of playing, ignore the user's
+    # real mute file, and skip the mic probe. Without this the test both makes
+    # noise and fails whenever the developer happens to be muted.
+    out=$(env -u CLAUDESAY_VOICE -u CLAUDESAY_RATE -u CLAUDESAY_DISABLE \
+        CLAUDESAY_STATE="$state" CLAUDESAY_DEBUG=1 CLAUDESAY_ENGINE=say \
+        CLAUDESAY_SILENT="$TEST_SILENT" CLAUDESAY_MUTE_WHEN_MIC=0 \
+        CLAUDESAY_MUTE_FILE=/nonexistent-mute \
+        bash "$HOOK" <<<"$(printf '{"transcript_path":"%s","session_id":"rd","stop_hook_active":false}' "$jsonl")" 2>&1)
+    killall say 2>/dev/null
+    rm -f "$jsonl"; rm -rf "$state"
+
+    # The debug line truncates at 80 chars for display, so compare the prefix.
+    local got="${want:0:80}"
+    echo "$out" | grep -qF "text=\"$got\"" \
+        || { echo "expected the final sentence; hook logged: $out"; return 1; }
+    # And the README's claim that nothing before it is spoken.
+    echo "$out" | grep -qF "batches of 500" \
+        && { echo "spoke the setup text too — README example is wrong"; return 1; }
+    return 0
+}
+
+# ─── Section: playback queue + mute ─────────────────────────────────────────
+# Audible tests are OPT-IN. Running the suite must never take over the speakers:
+# it was written on a laptop that also joins meetings, and a test run once talked
+# over a live call. `CLAUDESAY_AUDIBLE_TESTS=1 ./tests.sh` enables them.
+#
+# The silent default is not a coverage hole — the queue, mute, fallback and
+# engine-dispatch assertions all read state files and PIDs, not sound. Only the
+# handful that must observe real overlapping playback are gated.
+audio_really_plays() {
+    [[ -n "${CLAUDESAY_AUDIBLE_TESTS:-}" ]] || return 1
+    # Even when enabled: `say` exits 0 immediately without speaking if the audio
+    # device is busy, and always does on a headless CI runner. Check for real.
+    killall say 2>/dev/null; /bin/sleep 0.2
+    say -v Samantha "testing one two three four five" </dev/null >/dev/null 2>&1 &
+    local p=$! alive=0
+    /bin/sleep 0.4
+    kill -0 "$p" 2>/dev/null && alive=1
+    kill "$p" 2>/dev/null
+    (( alive == 1 ))
+}
+
+test_concurrent_sessions_do_not_overlap() {
+    # The failure this guards is unrecoverable by the user: you can re-read a
+    # screen, you cannot un-hear two sentences spoken at once.
+    if ! audio_really_plays; then
+        echo "SKIP: no usable audio device (say exits without speaking here)"
+        return 0
+    fi
+    local state; state=$(mktemp -d)
+    killall say 2>/dev/null; /bin/sleep 0.3
+    local n
+    for n in 1 2 3; do
+        ( fire_engine "$state" "cc$n" "Session $n is speaking a sentence long enough to overlap." \
+            CLAUDESAY_ENGINE=say >/dev/null 2>&1 ) &
+    done
+    wait
+    local max=0 spoke=0 c _i
+    for _i in $(seq 1 30); do
+        c=$(pgrep -x say | wc -l | tr -d ' ')
+        (( c > max )) && max=$c
+        (( c > 0 )) && spoke=$((spoke + 1))
+        /bin/sleep 0.4
+    done
+    killall say 2>/dev/null; rm -rf "$state"
+    (( spoke > 0 )) || { echo "nothing spoke at all — inconclusive, not a pass"; return 1; }
+    (( max <= 1 )) || { echo "$max sessions spoke at once (queue broken)"; return 1; }
+}
+
+test_queue_lock_is_released_after_speech() {
+    if ! audio_really_plays; then
+        echo "SKIP: no usable audio device (say exits without speaking here)"
+        return 0
+    fi
+    # A lock left behind by a finished utterance would mute the whole machine
+    # until the stale-grace expired.
+    local state; state=$(mktemp -d)
+    fire_engine "$state" "lk" "A short line to take and then release the lock." \
+        CLAUDESAY_ENGINE=say >/dev/null 2>&1
+    /bin/sleep 0.5
+    local held_during=0; [[ -d "$state/play.lock" ]] && held_during=1
+    killall say 2>/dev/null; /bin/sleep 0.8
+    local held_after=0; [[ -d "$state/play.lock" ]] && held_after=1
+    rm -rf "$state"
+    (( held_during == 1 )) || { echo "lock was never taken during playback"; return 1; }
+    (( held_after == 0 )) || { echo "lock leaked after playback ended"; return 1; }
+}
+
+test_mute_silences_and_unmute_restores() {
+    if ! audio_really_plays; then
+        echo "SKIP: no usable audio device (say exits without speaking here)"
+        return 0
+    fi
+    local mf; mf=$(mktemp -d)/muted
+    local state; state=$(mktemp -d)
+    killall say 2>/dev/null; /bin/sleep 0.2
+
+    CLAUDESAY_MUTE_FILE="$mf" bash "$HOOK" --mute >/dev/null 2>&1
+    fire_engine "$state" "mu1" "This must not be spoken while claudesay is muted." \
+        CLAUDESAY_ENGINE=say CLAUDESAY_MUTE_FILE="$mf" >/dev/null 2>&1
+    /bin/sleep 0.6
+    local while_muted; while_muted=$(pgrep -x say | wc -l | tr -d ' ')
+
+    CLAUDESAY_MUTE_FILE="$mf" bash "$HOOK" --unmute >/dev/null 2>&1
+    fire_engine "$state" "mu2" "This must be spoken again now that it is unmuted." \
+        CLAUDESAY_ENGINE=say CLAUDESAY_MUTE_FILE="$mf" >/dev/null 2>&1
+    /bin/sleep 0.6
+    local after_unmute; after_unmute=$(pgrep -x say | wc -l | tr -d ' ')
+
+    killall say 2>/dev/null; rm -rf "$state" "$(dirname "$mf")"
+    (( while_muted == 0 )) || { echo "spoke while muted ($while_muted procs)"; return 1; }
+    (( after_unmute >= 1 )) || { echo "did not resume after unmute"; return 1; }
+}
+
+test_expired_timed_mute_self_clears() {
+    local mf; mf=$(mktemp -d)/muted
+    printf '%s\n' "$(( $(date +%s) - 10 ))" >"$mf"   # expired 10s ago
+    local out; out=$(CLAUDESAY_MUTE_FILE="$mf" bash "$HOOK" --mute-status 2>&1)
+    local gone=0; [[ -f "$mf" ]] || gone=1
+    rm -rf "$(dirname "$mf")"
+    echo "$out" | grep -q "unmuted" || { echo "expired mute still reported as muted: $out"; return 1; }
+    (( gone == 1 )) || { echo "expired mute file was not cleared"; return 1; }
+}
+
+mk_mic_stub() {
+    # mk_mic_stub <exit-code>  — 0 = mic in use, 1 = idle, 2 = unknown
+    local f; f=$(mktemp -d)/mic.py
+    printf '#!/usr/bin/env python3\nimport sys\nsys.exit(%s)\n' "$1" >"$f"
+    printf '%s' "$f"
+}
+
+test_live_mic_silences_the_hook() {
+    # A voice notification during a call goes out to everyone listening and
+    # cannot be taken back, so a live mic must win over everything else.
+    local state; state=$(mktemp -d)
+    local stub; stub=$(mk_mic_stub 0)
+    fire_engine "$state" "mic1" "This must not be spoken while a microphone is live." \
+        CLAUDESAY_MUTE_WHEN_MIC=1 CLAUDESAY_MIC_SCRIPT="$stub" >/dev/null 2>&1
+    local spoke=0; [[ -f "$state/mic1.job" ]] && spoke=1
+    rm -rf "$state" "$(dirname "$stub")"
+    (( spoke == 0 )) || { echo "hook spoke while the mic was live"; return 1; }
+}
+
+test_idle_mic_allows_speech() {
+    local state; state=$(mktemp -d)
+    local stub; stub=$(mk_mic_stub 1)
+    fire_engine "$state" "mic2" "This should be spoken because no microphone is live." \
+        CLAUDESAY_MUTE_WHEN_MIC=1 CLAUDESAY_MIC_SCRIPT="$stub" >/dev/null 2>&1
+    local spoke=0; [[ -f "$state/mic2.job" ]] && spoke=1
+    rm -rf "$state" "$(dirname "$stub")"
+    (( spoke == 1 )) || { echo "hook stayed silent even though the mic was idle"; return 1; }
+}
+
+test_unknown_mic_state_still_speaks() {
+    # Fail open. A probe that cannot answer must not be able to mute you
+    # permanently and silently — that failure is invisible by construction.
+    local state; state=$(mktemp -d)
+    local stub; stub=$(mk_mic_stub 2)
+    fire_engine "$state" "mic3" "This should be spoken because the probe could not tell." \
+        CLAUDESAY_MUTE_WHEN_MIC=1 CLAUDESAY_MIC_SCRIPT="$stub" >/dev/null 2>&1
+    local spoke=0; [[ -f "$state/mic3.job" ]] && spoke=1
+    rm -rf "$state" "$(dirname "$stub")"
+    (( spoke == 1 )) || { echo "unknown mic state silenced the hook (must fail open)"; return 1; }
+}
+
+test_mic_gate_can_be_turned_off() {
+    local state; state=$(mktemp -d)
+    local stub; stub=$(mk_mic_stub 0)   # says the mic IS live
+    fire_engine "$state" "mic4" "This should be spoken because mic muting is disabled." \
+        CLAUDESAY_MUTE_WHEN_MIC=0 CLAUDESAY_MIC_SCRIPT="$stub" >/dev/null 2>&1
+    local spoke=0; [[ -f "$state/mic4.job" ]] && spoke=1
+    rm -rf "$state" "$(dirname "$stub")"
+    (( spoke == 1 )) || { echo "CLAUDESAY_MUTE_WHEN_MIC=0 did not disable the gate"; return 1; }
+}
+
+test_real_mic_probe_answers_sanely() {
+    # The shipped probe must run and return one of the three defined codes on
+    # this machine. It only reads a property flag — it opens no audio stream.
+    python3 "$ROOT/claudesay-mic.py" >/dev/null 2>&1
+    local rc=$?
+    [[ "$rc" == "0" || "$rc" == "1" || "$rc" == "2" ]] \
+        || { echo "probe returned $rc, expected 0/1/2"; return 1; }
+}
+
+test_toggle_mute_flips() {
+    local mf; mf=$(mktemp -d)/muted
+    local a b
+    a=$(CLAUDESAY_MUTE_FILE="$mf" bash "$HOOK" --toggle-mute 2>&1)
+    b=$(CLAUDESAY_MUTE_FILE="$mf" bash "$HOOK" --toggle-mute 2>&1)
+    rm -rf "$(dirname "$mf")"
+    echo "$a" | grep -q "muted" && echo "$b" | grep -q "unmuted" \
+        || { echo "toggle did not flip (first='$a' second='$b')"; return 1; }
+}
+
+test_legacy_shim_forwards_to_claudesay() {
+    local home; home=$(mktemp -d)
+    mkdir -p "$home/.claude/hooks"
+    echo '{}' >"$home/.claude/settings.json"
+    printf '#!/usr/bin/env bash\necho OLD-HOOK\n' >"$home/.claude/hooks/voice-notify.sh"
+    chmod +x "$home/.claude/hooks/voice-notify.sh"
+    HOME="$home" bash "$INSTALLER" --no-picker >/dev/null 2>&1
+    local out; out=$(bash "$home/.claude/hooks/voice-notify.sh" --version 2>&1)
+    rm -rf "$home"
+    [[ "$out" =~ ^claudesay\ [0-9] ]] \
+        || { echo "legacy path did not forward (got: $out)"; return 1; }
+}
+
 # ─── Section: engine layer ──────────────────────────────────────────────────
 # These never load a model. A stub server stands in for claudesay-voice.py so
 # the suite stays hermetic and offline: what's under test is the hook's engine
@@ -283,10 +511,21 @@ stop_stub() {
 
 fire_engine() {
     # fire_engine <state> <sid> <text> [extra env assignments...]
+    #
+    # Every claudesay var is cleared first. Without this the suite inherits the
+    # developer's own settings — someone running with CLAUDESAY_ENGINE=kokoro
+    # exported would see "engine defaults to say" fail, which is a bug in the
+    # test, not in the hook.
     local state="$1" sid="$2" text="$3"; shift 3
     local jsonl; jsonl=$(mktemp)
     mk_jsonl "$text" >"$jsonl"
-    env CLAUDESAY_STATE="$state" CLAUDESAY_DEBUG=1 "$@" \
+    env -u CLAUDESAY_ENGINE -u CLAUDESAY_VOICE -u CLAUDESAY_RATE \
+        -u CLAUDESAY_KOKORO_PORT -u CLAUDESAY_KOKORO_VOICE \
+        -u CLAUDESAY_KOKORO_IDLE -u CLAUDESAY_KOKORO_TIMEOUT \
+        -u CLAUDESAY_VOICE_SCRIPT -u CLAUDESAY_DISABLE \
+        CLAUDESAY_STATE="$state" CLAUDESAY_DEBUG=1 \
+        CLAUDESAY_SILENT="$TEST_SILENT" \
+        CLAUDESAY_MUTE_WHEN_MIC=0 CLAUDESAY_MUTE_FILE=/nonexistent-mute "$@" \
         bash "$HOOK" <<<"$(printf '{"transcript_path":"%s","session_id":"%s","stop_hook_active":false}' "$jsonl" "$sid")"
     local rc=$?
     rm -f "$jsonl"
@@ -315,13 +554,24 @@ test_unknown_engine_falls_back_to_say() {
 # writes an empty one, so such a test passes against broken fallback code.
 assert_live_player() {
     # assert_live_player <pid-file> <expected comm>
-    local pid_file="$1" want="$2" pid="" comm=""
-    [[ -f "$pid_file" ]] || { echo "no pid file"; return 1; }
-    pid=$(cat "$pid_file" 2>/dev/null)
-    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "pid file empty or non-numeric: '$pid'"; return 1; }
-    comm=$(ps -p "$pid" -o comm= 2>/dev/null)
-    comm="${comm##*/}"
-    [[ "$comm" == "$want" ]] || { echo "pid $pid is '${comm:-dead}', expected '$want'"; return 1; }
+    #
+    # The PID appears asynchronously: the hook returns as soon as the queue job
+    # is spawned, and the job writes the player's PID only after it wins the
+    # playback lock. So poll rather than read once — a bare read races with the
+    # queue and fails intermittently.
+    local pid_file="$1" want="$2" pid="" comm="" _n
+    for _n in $(seq 1 40); do
+        pid=$(cat "$pid_file" 2>/dev/null)
+        if [[ "$pid" =~ ^[0-9]+$ ]]; then
+            comm=$(ps -p "$pid" -o comm= 2>/dev/null)
+            comm="${comm##*/}"
+            [[ "$comm" == "$want" ]] && return 0
+        fi
+        /bin/sleep 0.1
+    done
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "no player PID appeared within 4s (got '$pid')"; return 1; }
+    echo "pid $pid is '${comm:-dead}', expected '$want'"
+    return 1
 }
 
 test_kokoro_cold_falls_back_and_still_speaks() {
@@ -348,7 +598,12 @@ test_kokoro_warm_uses_server() {
     # audio device afplay can exit immediately, which would make this flaky.
     # These three together still pin the behavior — a hook that silently played
     # nothing has no PID, and one that fell through to `say` leaves a `say`.
-    local pid=""; [[ -f "$state/e4.pid" ]] && pid=$(cat "$state/e4.pid" 2>/dev/null)
+    local pid="" _n
+    for _n in $(seq 1 40); do          # the queue writes the PID asynchronously
+        pid=$(cat "$state/e4.pid" 2>/dev/null)
+        [[ "$pid" =~ ^[0-9]+$ ]] && break
+        /bin/sleep 0.1
+    done
     local say_running=0; pgrep -x say >/dev/null 2>&1 && say_running=1
     local body=""; [[ -f "$cap" ]] && body=$(cat "$cap")
     local wav_ok=0; [[ -s "$state/e4.wav" ]] && wav_ok=1
@@ -413,12 +668,26 @@ test_kokoro_server_error_falls_back_to_say() {
     local out; out=$(fire_engine "$state" "e6" "A substantive sentence that should be spoken aloud now." \
         CLAUDESAY_ENGINE=kokoro CLAUDESAY_KOKORO_PORT="$STUB_PORT" 2>&1)
     stop_stub
-    # The load-bearing assertion: a real `say` must be speaking. The debug line
-    # alone proves only that we noticed the failure, not that we recovered.
-    local err; err=$(assert_live_player "$state/e6.pid" say) || {
-        killall say 2>/dev/null; rm -rf "$state"; echo "$err; hook said: $out"; return 1
-    }
+    # Deliberately not "is a `say` process alive": macOS `say` exits 0 without
+    # speaking when the audio device is contended (and always on a headless CI
+    # runner), so that assertion is flaky by construction. What must be true is
+    # that the hook handed a player to the queue at all — with the fallback
+    # removed, speak_kokoro returns early and no PID is ever recorded.
+    local pid="" _n
+    for _n in $(seq 1 20); do
+        pid=$(cat "$state/e6.pid" 2>/dev/null)
+        [[ "$pid" =~ ^[0-9]+$ ]] && break
+        /bin/sleep 0.1
+    done
+    local wav_left=0; [[ -e "$state/e6.wav" ]] && wav_left=1
     killall say 2>/dev/null; rm -rf "$state"
+
+    echo "$out" | grep -q "falling back to say" \
+        || { echo "did not report the fallback; hook said: $out"; return 1; }
+    [[ "$pid" =~ ^[0-9]+$ ]] \
+        || { echo "no player was queued — the fallback never spoke (pid='$pid')"; return 1; }
+    (( wav_left == 0 )) \
+        || { echo "a wav was left behind from a failed synthesis"; return 1; }
 }
 
 test_kokoro_bad_port_is_sanitized() {
@@ -481,6 +750,17 @@ test_installer_refuses_broken_json() {
     out=$(HOME="$home" bash "$INSTALLER" --no-picker 2>&1) && rc=0 || rc=$?
     rm -rf "$home"
     [[ "$rc" -ne 0 ]] && echo "$out" | grep -q "not valid JSON"
+}
+
+test_installer_places_mic_probe() {
+    # If this file is missing, meeting detection silently never runs — and the
+    # way you find out is by talking over a call.
+    local home; home=$(mktemp -d)
+    mkdir -p "$home/.claude"; echo '{}' >"$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALLER" --no-picker >/dev/null 2>&1
+    local ok=0; [[ -s "$home/.claude/hooks/claudesay-mic.py" ]] && ok=1
+    rm -rf "$home"
+    (( ok == 1 )) || { echo "claudesay-mic.py not installed next to the hook"; return 1; }
 }
 
 test_installer_places_voice_server() {
@@ -555,6 +835,19 @@ run "voice with apostrophe is accepted"             test_voice_with_apostrophe_k
 run "voice starting with '-' is rejected"           test_voice_with_leading_dash_rejected
 run "installer rejects --voice=-foo"                test_installer_rejects_dash_voice
 
+run "README example speaks the last sentence"    test_readme_example_selects_last_sentence
+
+run "concurrent sessions never overlap"             test_concurrent_sessions_do_not_overlap
+run "queue lock is released after speech"           test_queue_lock_is_released_after_speech
+run "mute silences, unmute restores"                test_mute_silences_and_unmute_restores
+run "expired timed mute self-clears"                test_expired_timed_mute_self_clears
+run "toggle-mute flips"                             test_toggle_mute_flips
+run "live mic silences the hook"                    test_live_mic_silences_the_hook
+run "idle mic allows speech"                        test_idle_mic_allows_speech
+run "unknown mic state still speaks (fail open)"    test_unknown_mic_state_still_speaks
+run "mic gate can be disabled"                      test_mic_gate_can_be_turned_off
+run "shipped mic probe answers sanely"              test_real_mic_probe_answers_sanely
+run "legacy hook path forwards to claudesay"        test_legacy_shim_forwards_to_claudesay
 run "engine defaults to say"                        test_engine_defaults_to_say
 run "unknown engine falls back to say"              test_unknown_engine_falls_back_to_say
 run "kokoro cold: falls back, still speaks"         test_kokoro_cold_falls_back_and_still_speaks
@@ -570,6 +863,7 @@ run "installer omits matcher field"                 test_installer_no_matcher_fi
 run "installer writes timeout: 15"                  test_installer_writes_timeout
 run "installer refuses broken settings.json"        test_installer_refuses_broken_json
 run "installer places the voice server"             test_installer_places_voice_server
+run "installer places the mic probe"                test_installer_places_mic_probe
 run "uninstaller removes the voice server"          test_uninstaller_removes_voice_server
 run "uninstaller preserves unrelated hooks"         test_uninstaller_preserves_unrelated_hooks
 

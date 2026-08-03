@@ -4,12 +4,13 @@
 
 set -euo pipefail
 
-CLAUDESAY_VERSION="0.4.0"
+CLAUDESAY_VERSION="0.5.0"
 
 REPO_RAW="${CLAUDESAY_RAW:-https://raw.githubusercontent.com/abryfs/claudesay/main}"
 HOOKS_DIR="$HOME/.claude/hooks"
 SCRIPT_PATH="$HOOKS_DIR/claudesay.sh"
 VOICE_PATH="$HOOKS_DIR/claudesay-voice.py"
+MIC_PATH="$HOOKS_DIR/claudesay-mic.py"
 SETTINGS="$HOME/.claude/settings.json"
 HOOK_TIMEOUT_SEC=15
 
@@ -91,6 +92,43 @@ if [[ -s "$VOICE_PATH" ]]; then
 else
     rm -f "$VOICE_PATH"
     echo "  (skipped the optional neural voice server — say engine works regardless)"
+fi
+
+# The mic probe gates every notification, so a missing copy would silently
+# disable meeting detection — the one guard whose failure you notice only by
+# talking over a call. Install it with the hook, not as an optional extra.
+if [[ -n "$SELF_DIR" && -f "$SELF_DIR/claudesay-mic.py" ]]; then
+    cp "$SELF_DIR/claudesay-mic.py" "$MIC_PATH"
+else
+    curl -fsSL "$REPO_RAW/claudesay-mic.py" -o "$MIC_PATH" || true
+fi
+if [[ -s "$MIC_PATH" ]]; then
+    chmod +x "$MIC_PATH"
+    echo "✓ installed $MIC_PATH (stays quiet while you are on a call)"
+else
+    rm -f "$MIC_PATH"
+    echo "  ⚠ no mic probe — claudesay will NOT auto-mute during meetings"
+fi
+
+# Claude Code reads its hook config when a session starts, so sessions already
+# running keep invoking whatever path they were launched with. Upgrading only
+# settings.json therefore leaves those sessions on the old script — outside the
+# playback queue and deaf to the mute switch, which is exactly when you notice
+# voices talking over each other. Forward the legacy name instead of orphaning
+# it, so running sessions join the new behavior without being restarted.
+LEGACY_PATH="$HOOKS_DIR/voice-notify.sh"
+if [[ -e "$LEGACY_PATH" && ! -L "$LEGACY_PATH" ]] && ! grep -q 'claudesay-legacy-shim' "$LEGACY_PATH" 2>/dev/null; then
+    cat >"$LEGACY_PATH" <<'SHIM'
+#!/usr/bin/env bash
+# claudesay-legacy-shim — forwards to claudesay.sh.
+#
+# Sessions started before the upgrade still call this path. Forwarding keeps
+# them speaking, and puts them on the same playback queue and mute switch as
+# new sessions. Safe to delete once no pre-upgrade session is still running.
+exec "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/claudesay.sh" "$@"
+SHIM
+    chmod +x "$LEGACY_PATH"
+    echo "✓ forwarded legacy $LEGACY_PATH → claudesay.sh (already-running sessions keep working)"
 fi
 
 # ─── 2. Pick a voice (interactive arrow-key TUI with live preview) ───────────

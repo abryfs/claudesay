@@ -6,6 +6,7 @@ set -euo pipefail
 HOOKS_DIR="$HOME/.claude/hooks"
 SCRIPT_PATH="$HOOKS_DIR/claudesay.sh"
 VOICE_PATH="$HOOKS_DIR/claudesay-voice.py"
+MIC_PATH="$HOOKS_DIR/claudesay-mic.py"
 LEGACY_PATH="$HOOKS_DIR/voice-notify.sh"
 SETTINGS="$HOME/.claude/settings.json"
 
@@ -59,6 +60,10 @@ fi
 if [[ -f "$VOICE_PATH" ]]; then
     rm -f "$VOICE_PATH"
     echo "✓ removed $VOICE_PATH"
+fi
+if [[ -f "$MIC_PATH" ]]; then
+    rm -f "$MIC_PATH"
+    echo "✓ removed $MIC_PATH"
 fi
 
 # Clean up state files. Both default state-dir layouts are removed:

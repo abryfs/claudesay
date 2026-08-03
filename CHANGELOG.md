@@ -4,6 +4,54 @@ All notable changes to claudesay are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-08-03
+
+Everything here comes from one bad afternoon: a test run talked over a live
+meeting while three sessions spoke on top of each other. Each fix targets a
+failure the user cannot undo after the fact.
+
+### Added
+- **Silence while a microphone is live.** If any input device is in use,
+  claudesay says nothing. The signal is CoreAudio's `DeviceIsRunningSomewhere`
+  — the flag behind the orange mic dot — so Zoom, Meet, Teams, Slack huddles,
+  Granola and QuickTime all work without an app list to maintain. It reads a
+  property; it never opens a stream, captures nothing, and never triggers a
+  microphone permission prompt. Disable with `CLAUDESAY_MUTE_WHEN_MIC=0`.
+- **A cross-session playback queue.** Two sessions ending at the same moment
+  now speak in turn instead of over each other. Within a session, barge-in is
+  unchanged: the newest line still cuts off the previous one.
+- **Mute, machine-wide and live:** `--mute [MINUTES]`, `--unmute`,
+  `--toggle-mute`, `--mute-status`. It takes effect in sessions that are already
+  running and silences whatever is speaking right now, without touching system
+  audio. `--toggle-mute` is meant to be bound to a global hotkey (README shows
+  the Shortcuts.app recipe, which needs no extra tools).
+- **`CLAUDESAY_SILENT=1`** — dry run that renders speech to a file instead of
+  playing it. The test suite now uses it by default.
+- Audio samples and a playable comparison clip in `samples/`.
+
+### Fixed
+- **Queued speech was killed the moment the hook returned.** `play_queued`
+  backgrounded its job inside a command substitution, so the job did not outlive
+  the hook process and playback was cut off instantly. It now backgrounds from
+  the main shell.
+- **The queue lock never actually held.** It recorded `$$`, which inside a
+  subshell still names the *original* shell — a PID that exits immediately, so
+  every other session saw a dead holder and broke the lock. Three sessions still
+  spoke at once. The lock now holds the player's PID, which lives exactly as long
+  as the speech. (`$BASHPID` is unavailable on stock macOS bash 3.2, and
+  `sh -c 'echo $PPID'` names the wrong shell.)
+- Sessions started before an upgrade kept calling `voice-notify.sh` and so
+  bypassed the queue and the mute switch entirely. The installer now forwards
+  that path to `claudesay.sh` instead of orphaning it.
+
+### Changed
+- **The test suite no longer uses the speakers.** It renders instead, and the
+  handful of tests that must observe real overlapping playback are gated behind
+  `CLAUDESAY_AUDIBLE_TESTS=1`. Reason: the suite is developed on a laptop that
+  also joins meetings.
+- Test helpers now clear ambient `CLAUDESAY_*` config. `engine defaults to say`
+  previously failed for anyone who had actually enabled a different engine.
+
 ## [0.4.0] — 2026-08-03
 
 Adds an optional neural voice without giving up any of the properties that made

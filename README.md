@@ -56,17 +56,35 @@ Open a new Claude Code session. Ask something. When the response ends, you'll he
 
 ---
 
-## Demo
+## Hear it
 
-The voice picker (recorded with [`asciinema`](https://asciinema.org)):
+Same sentence, both engines, back to back — `say` first, then Kokoro. Press play:
 
-> *(recording placeholder — `asciinema rec demo.cast` while running `bash install.sh`, then `asciinema upload demo.cast`)*
+<video src="https://github.com/abryfs/claudesay/raw/main/samples/0-comparison.mp4" controls muted="false" width="100%"></video>
 
-To record your own, with audio:
+*(No player above? GitHub only renders video on some surfaces — grab the audio directly: [**comparison.mp3**](samples/0-comparison.mp3) · [`say` alone](samples/1-say-samantha.mp3) · [Kokoro alone](samples/2-kokoro-af-heart.mp3).)*
+
+Or play them straight from the terminal, no clone:
 
 ```bash
-brew install asciinema
-asciinema rec --command="bash install.sh" demo.cast
+curl -fsSL https://raw.githubusercontent.com/abryfs/claudesay/main/samples/0-comparison.mp3 \
+  -o /tmp/claudesay-demo.mp3 && afplay /tmp/claudesay-demo.mp3
+```
+
+Both clips are loudness-normalized to −16 LUFS, so you're comparing the voices and not the volume. Neither came from a demo script: they're `say -v Samantha` and a `POST /speak` to the same voice server the hook uses.
+
+### What it picks out of a turn
+
+The sample isn't a cherry-picked line — it's the output of the filter. Given this final message from Claude:
+
+> I've updated the migration to backfill in batches of 500 instead of all at once, added an index on `events.team_id`, and re-ran the suite. **All three tests pass and the migration completed cleanly, so this is ready to deploy to staging whenever you want.**
+
+claudesay speaks exactly the bolded sentence, and nothing else. That's the whole editorial rule: **the last sentence, because that's where the verdict or the question lands.** The setup you already read on screen; the part you need to act on is the part worth saying out loud.
+
+Run it yourself to see the selection without waiting for a turn:
+
+```bash
+CLAUDESAY_DEBUG=1 ~/.claude/hooks/claudesay.sh --test   # or replay a real transcript, see Troubleshooting
 ```
 
 ---
@@ -165,6 +183,49 @@ Tune it:
 } }
 ```
 
+## It shuts up when you're on a call
+
+If a microphone is live, claudesay stays silent. No configuration, no app list.
+
+This is the one failure the tool cannot walk back: a notification during a meeting is broadcast to everyone listening, and you can't un-say it. Muting after the fact is too late.
+
+The signal is CoreAudio's `DeviceIsRunningSomewhere` — the same flag behind the orange dot in your menu bar. It's true whenever any process holds an input stream, so Zoom, Meet, Teams, Slack huddles, Granola and QuickTime all work without claudesay knowing they exist. **It reads a property flag; it never opens an audio stream, captures nothing, and never triggers a microphone permission prompt.**
+
+Two details that matter:
+
+- **It checks every input device, not just the default one.** Measured on a MacBook Pro: opening the mic lit up device 95 while the default input was device 90 — a default-only check reported "idle" straight through a live capture.
+- **It fails open.** If the probe can't answer, claudesay speaks. A detector that silently mutes you forever is worse than one that occasionally talks, because you'd never find out.
+
+Turn it off with `CLAUDESAY_MUTE_WHEN_MIC=0`.
+
+## Mute (and a global hotkey)
+
+```bash
+claudesay.sh --mute          # silence every session until you unmute
+claudesay.sh --mute 45       # ...for 45 minutes, then it lifts itself
+claudesay.sh --unmute
+claudesay.sh --toggle-mute   # bind this to a hotkey
+claudesay.sh --mute-status
+```
+
+Mute is machine-wide and live: it takes effect in sessions that are **already running**, and it silences whatever is speaking right now. It mutes claudesay only — your system volume, music, and call audio are untouched.
+
+**For a global hotkey that works when Claude isn't focused**, use the Shortcuts app (built into macOS — no extra tools):
+
+1. Shortcuts → **+** → add the **Run Shell Script** action.
+2. Script: `$HOME/.claude/hooks/claudesay.sh --toggle-mute`
+3. Name it "Mute Claude", then **⌘I** → *Add Keyboard Shortcut* → press your combination.
+
+It now fires from any app. `--mute 45` is the better meeting default than a plain toggle, because the mute you forget to lift is the one that quietly turns the tool off for good.
+
+## Two sessions ending at once
+
+Speech from different Claude Code sessions **queues** instead of overlapping.
+
+Within one session the newest line still cuts off the previous one — that's barge-in, and it's what you want. Across sessions the lines wait their turn, because two sentences spoken simultaneously are both lost. You can re-read a screen; you can't un-hear an overlap.
+
+The queue is a `mkdir` mutex holding the *player's* PID (a shell can't portably learn its own PID inside a subshell, and every candidate for it dies the moment the hook returns). A line that can't get the floor within `CLAUDESAY_QUEUE_WAIT` seconds is dropped rather than queued forever — speech that arrives a minute late describes work you've moved on from.
+
 ## Configuration
 
 Set env vars in `~/.claude/settings.json` (or your shell):
@@ -184,6 +245,11 @@ Set env vars in `~/.claude/settings.json` (or your shell):
 | `CLAUDESAY_KOKORO_IDLE` | `300` | Seconds of silence before the voice server exits. `0` never exits. |
 | `CLAUDESAY_KOKORO_PORT` | `8787` | Loopback port for the voice server. |
 | `CLAUDESAY_KOKORO_TIMEOUT` | `10` | Seconds to wait for synthesis before falling back to `say`. |
+| `CLAUDESAY_MUTE_WHEN_MIC` | `1` | Stay silent while any microphone is live. `0` disables. |
+| `CLAUDESAY_MIC_TTL` | `8` | Seconds to cache the mic check, so the hook stays fast. |
+| `CLAUDESAY_QUEUE_WAIT` | `30` | Max seconds a line waits behind another session before being dropped. |
+| `CLAUDESAY_MUTE_FILE` | `~/.claude/claudesay-muted` | Where the mute switch lives. |
+| `CLAUDESAY_SILENT` | unset | Dry run: render speech to a file instead of playing it. |
 
 Example settings.json snippet:
 
@@ -329,6 +395,7 @@ claudesay is what you want when you just want Claude to talk to you sensibly wit
 
 - macOS (uses `/usr/bin/say` and `/usr/bin/afplay`)
 - `jq` — `brew install jq` if missing
+- `python3` — ships with macOS; used only for the mic check (stdlib only, no packages)
 - Claude Code 2.x (tested on 2.1.123)
 - *For the neural voice only:* [`uv`](https://docs.astral.sh/uv/) and an Apple Silicon Mac (MLX). Intel Macs stay on `say`.
 

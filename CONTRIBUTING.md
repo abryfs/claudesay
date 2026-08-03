@@ -45,3 +45,16 @@ echo "{\"transcript_path\":\"$LATEST\",\"session_id\":\"dev\",\"stop_hook_active
 2. Update `CHANGELOG.md` with the new version section.
 3. Tag (`git tag -s v0.4.0 -m "v0.4.0"`) and push the tag.
 4. Cut a GitHub release with the changelog excerpt.
+
+## Running the tests
+
+```bash
+./tests.sh                              # silent — renders instead of playing
+CLAUDESAY_AUDIBLE_TESTS=1 ./tests.sh    # let it actually use the speakers
+```
+
+The suite is silent by default and that is deliberate: it is developed on a
+laptop that also joins meetings, and an early version once talked over a live
+call. Tests that must observe real overlapping playback are gated behind
+`CLAUDESAY_AUDIBLE_TESTS` and skip themselves otherwise. Everything else
+asserts on state files and PIDs, which needs no sound at all.

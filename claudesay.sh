@@ -28,13 +28,46 @@
 #   CLAUDESAY_KOKORO_VOICE  Kokoro voice        (default: af_heart)
 #   CLAUDESAY_KOKORO_IDLE   server idle-exit s  (default: 300)
 #   CLAUDESAY_KOKORO_TIMEOUT synth timeout s    (default: 10)
+#
+#   CLAUDESAY_MUTE_WHEN_MIC  silence during calls (default: 1)
+#   CLAUDESAY_MIC_TTL        mic-check cache secs (default: 8)
+#   CLAUDESAY_QUEUE_WAIT     max queue wait secs  (default: 30)
+#   CLAUDESAY_MUTE_FILE      mute switch path     (default: ~/.claude/…)
+#   CLAUDESAY_SILENT         render, do not play  (default: unset)
 
 set -u
 
-CLAUDESAY_VERSION="0.4.0"
+CLAUDESAY_VERSION="0.5.0"
 
 # Where this script lives — the optional voice server sits beside it.
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || SELF_DIR="."
+
+# Mute lives outside the state dir on purpose. State is per-boot scratch under
+# $TMPDIR; a mute you set before a meeting must survive a reboot, and — more
+# importantly — must be visible to every session on the machine at once.
+MUTE_FILE="${CLAUDESAY_MUTE_FILE:-$HOME/.claude/claudesay-muted}"
+
+is_muted() {
+    [[ -f "$MUTE_FILE" ]] || return 1
+    local until; until=$(cat "$MUTE_FILE" 2>/dev/null)
+    [[ "$until" == "forever" ]] && return 0
+    if [[ "$until" =~ ^[0-9]+$ ]]; then
+        (( $(date +%s) < until )) && return 0
+        rm -f "$MUTE_FILE" 2>/dev/null   # expired — clear it so it self-heals
+    fi
+    return 1
+}
+
+mute_status() {
+    if ! is_muted; then echo "claudesay: unmuted"; return 0; fi
+    local until; until=$(cat "$MUTE_FILE" 2>/dev/null)
+    if [[ "$until" == "forever" ]]; then
+        echo "claudesay: muted (until you unmute)"
+    else
+        local mins=$(( (until - $(date +%s) + 59) / 60 ))
+        echo "claudesay: muted for another ${mins}m"
+    fi
+}
 
 # CLI flags. The hook is normally invoked with stdin JSON and no args,
 # but --version / --test let users sanity-check the install without
@@ -47,6 +80,38 @@ case "${1:-}" in
         # Handled below, once the engines are defined — a test that bypassed
         # the engine layer would happily pass on a broken kokoro setup.
         TEST_MODE=1 ;;
+    --mute)
+        # `--mute` alone holds until you unmute; `--mute 45` is the meeting case
+        # and expires on its own, because the mute you forget to lift is the one
+        # that quietly makes the tool useless.
+        mkdir -p "$(dirname "$MUTE_FILE")" 2>/dev/null
+        if [[ "${2:-}" =~ ^[0-9]+$ ]] && (( $2 > 0 )); then
+            printf '%s\n' "$(( $(date +%s) + $2 * 60 ))" >"$MUTE_FILE"
+        else
+            printf 'forever\n' >"$MUTE_FILE"
+        fi
+        mute_status
+        # Silence anything already speaking — you pressed this to stop a voice.
+        killall say afplay 2>/dev/null
+        exit 0 ;;
+    --unmute)
+        rm -f "$MUTE_FILE" 2>/dev/null
+        echo "claudesay: unmuted"
+        exit 0 ;;
+    --toggle-mute)
+        mkdir -p "$(dirname "$MUTE_FILE")" 2>/dev/null
+        if is_muted; then
+            rm -f "$MUTE_FILE" 2>/dev/null
+            echo "claudesay: unmuted"
+        else
+            printf 'forever\n' >"$MUTE_FILE"
+            echo "claudesay: muted"
+            killall say afplay 2>/dev/null
+        fi
+        exit 0 ;;
+    --mute-status)
+        mute_status
+        exit 0 ;;
     --help|-h)
         cat <<USAGE
 claudesay $CLAUDESAY_VERSION — Stop hook for Claude Code
@@ -54,7 +119,14 @@ claudesay $CLAUDESAY_VERSION — Stop hook for Claude Code
 Normal usage is invocation by Claude Code with stdin JSON. CLI helpers:
   --version, -V    Print version and exit
   --test           Speak a test sentence through the configured engine
+  --mute [MIN]     Silence every session; optionally for MIN minutes
+  --unmute         Resume speaking
+  --toggle-mute    Flip mute — bind this to a global hotkey
+  --mute-status    Report whether claudesay is muted
   --help, -h       This message
+
+Mute is machine-wide and takes effect immediately, including in sessions
+that are already running. It silences claudesay only, never system audio.
 
 Engines: CLAUDESAY_ENGINE=say (default, instant, built-in) or =kokoro
 (neural, local, needs uv; first use warms a server and falls back to say).
@@ -67,6 +139,13 @@ esac
 TEST_MODE="${TEST_MODE:-}"
 
 [[ -n "${CLAUDESAY_DISABLE:-}" ]] && exit 0
+
+# Muted is a machine-wide, live switch — checked on every fire rather than read
+# once at session start, so hitting the hotkey silences sessions that are
+# already running. It mutes claudesay only; system audio is untouched.
+if is_muted && [[ -z "${TEST_MODE:-}" ]]; then
+    exit 0
+fi
 
 # Optional verbose tracing — set CLAUDESAY_DEBUG=1 (or in settings.json env)
 # to log every decision the hook makes. Helps diagnose "why didn't it speak?"
@@ -95,6 +174,11 @@ if [[ -n "$RATE" ]] && ! [[ "$RATE" =~ ^[0-9]+$ ]]; then
 fi
 
 ENGINE="${CLAUDESAY_ENGINE:-say}"
+MUTE_WHEN_MIC="${CLAUDESAY_MUTE_WHEN_MIC:-1}"
+SILENT="${CLAUDESAY_SILENT:-}"
+MIC_TTL="${CLAUDESAY_MIC_TTL:-8}"
+MIC_SCRIPT="${CLAUDESAY_MIC_SCRIPT:-$SELF_DIR/claudesay-mic.py}"
+[[ "$MIC_TTL" =~ ^[0-9]+$ ]] || MIC_TTL=8
 KOKORO_PORT="${CLAUDESAY_KOKORO_PORT:-8787}"
 KOKORO_TIMEOUT="${CLAUDESAY_KOKORO_TIMEOUT:-10}"
 VOICE_SCRIPT="${CLAUDESAY_VOICE_SCRIPT:-$SELF_DIR/claudesay-voice.py}"
@@ -124,18 +208,164 @@ command -v say >/dev/null 2>&1 || exit 0
 mkdir -p "$STATE_DIR" 2>/dev/null
 chmod 700 "$STATE_DIR" 2>/dev/null || true
 
+# Atomic state writer — used for every state file so a TOCTOU symlink
+# can't make us write through a planted target.
+write_state() {
+    local target="$1"
+    local value="$2"
+    local tmp="$target.$$.tmp"
+    if printf '%s\n' "$value" >"$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$target" 2>/dev/null || rm -f "$tmp"
+    fi
+}
+
+# ─── Meeting detection ──────────────────────────────────────────────────────
+# If a microphone is live, you are on a call, and a voice notification is the
+# single worst thing this tool can do — it goes out to everyone listening, and
+# you cannot take it back. So an active mic silences claudesay automatically.
+#
+# The probe reads CoreAudio's "is this device running somewhere" flag, the same
+# signal behind the orange dot in the menu bar. It never opens a stream, so it
+# captures nothing and never asks for microphone permission.
+#
+# The result is cached for MIC_TTL seconds: the hook fires on every turn and a
+# python spawn per turn would eat the latency budget, while a meeting does not
+# start and stop inside eight seconds.
+mic_is_hot() {
+    [[ "$MUTE_WHEN_MIC" == "1" ]] || return 1
+    [[ -f "$MIC_SCRIPT" ]] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    local cache="$STATE_DIR/mic.cache" now ts val
+    now=$(date +%s)
+    if [[ -f "$cache" && ! -L "$cache" ]]; then
+        read -r ts val <"$cache" 2>/dev/null || true
+        if [[ "${ts:-}" =~ ^[0-9]+$ ]] && (( now - ts < MIC_TTL )); then
+            [[ "${val:-}" == "hot" ]] && return 0
+            return 1
+        fi
+    fi
+
+    python3 "$MIC_SCRIPT" >/dev/null 2>&1
+    local rc=$?
+    # rc 0 = a mic is live. rc 1 = idle. rc 2 = could not tell — and "could not
+    # tell" must mean speak, or a broken probe would mute you forever without
+    # ever saying why.
+    if (( rc == 0 )); then
+        write_state "$cache" "$now hot"
+        return 0
+    fi
+    write_state "$cache" "$now cold"
+    return 1
+}
+
+if [[ -z "$TEST_MODE" ]] && mic_is_hot; then
+    debug "skip: a microphone is live — you are probably on a call"
+    exit 0
+fi
+
+# ─── Playback queue ─────────────────────────────────────────────────────────
+# Barge-in is per session: a new utterance cuts off that session's previous one.
+# But two *different* sessions ending at the same moment used to talk over each
+# other, which is the one failure that makes voice notifications useless — you
+# can re-read a screen, you cannot un-hear two overlapping sentences.
+#
+# So playback takes a machine-wide lock. Within a session the newest line still
+# wins immediately; across sessions lines wait their turn. `mkdir` is the mutex
+# because it is atomic on every filesystem we care about, needs no `flock`
+# (macOS ships none), and leaves a directory we can stamp with the holder's PID.
+
+LOCK_DIR="$STATE_DIR/play.lock"
+QUEUE_WAIT="${CLAUDESAY_QUEUE_WAIT:-30}"
+[[ "$QUEUE_WAIT" =~ ^[0-9]+$ ]] || QUEUE_WAIT=30
+
+# The lock records the *player's* PID, not the holding shell's.
+#
+# A shell cannot portably learn its own PID inside `( … )`: `$$` still names the
+# original shell, `$BASHPID` needs bash 4 (stock macOS ships 3.2), and
+# `sh -c 'echo $PPID'` names the command-substitution subshell. Every one of
+# those dies the instant the hook returns, so contenders would see a dead holder,
+# break the lock, and all speak at once — the exact bug this queue prevents.
+#
+# `say`/`afplay` are real processes that live exactly as long as the speech, so
+# they are the honest holder. The pid appears a beat after the directory does,
+# which is what STALE_GRACE covers.
+STALE_GRACE=5
+
+acquire_play_lock() {
+    local ticks=0 max=$((QUEUE_WAIT * 4)) holder at now
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        holder=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+        if [[ "$holder" =~ ^[0-9]+$ ]]; then
+            # A named holder that has exited leaves the lock free.
+            if ! kill -0 "$holder" 2>/dev/null; then
+                rm -rf "$LOCK_DIR" 2>/dev/null
+                continue
+            fi
+        else
+            # No pid yet: either the winner is a beat from writing one, or it
+            # died between mkdir and starting its player. Age decides which.
+            at=$(cat "$LOCK_DIR/at" 2>/dev/null)
+            now=$(date +%s)
+            if [[ ! "$at" =~ ^[0-9]+$ ]] || (( now - at > STALE_GRACE )); then
+                rm -rf "$LOCK_DIR" 2>/dev/null
+                continue
+            fi
+        fi
+        # Give up rather than let a backlog build. Speech that arrives a minute
+        # late describes work you have already moved on from.
+        if (( ticks >= max )); then return 1; fi
+        /bin/sleep 0.25
+        ticks=$((ticks + 1))
+    done
+    date +%s >"$LOCK_DIR/at" 2>/dev/null
+    return 0
+}
+
+# Run a player behind the queue. Sets the global JOB_PID rather than echoing it:
+# capturing via $(...) would background the job inside a command-substitution
+# subshell, and that job does not outlive the hook process — the speech would be
+# cut off the instant the hook returned. Backgrounding from the main shell also
+# lets `disown` actually find the job.
+#
+# The job records the real player PID into $PID_FILE once it wins the queue and
+# starts speaking, which is the PID barge-in signals.
+JOB_PID=""
+play_queued() {
+    (
+        acquire_play_lock || exit 0
+        # shellcheck disable=SC2064  # expand LOCK_DIR now, not at trap time
+        trap "rm -rf '$LOCK_DIR' 2>/dev/null" EXIT
+        "$@" </dev/null >/dev/null 2>&1 &
+        player=$!
+        # Publish the holder before anything else: contenders are waiting on it.
+        printf '%s\n' "$player" >"$LOCK_DIR/pid" 2>/dev/null
+        write_state "$PID_FILE" "$player"
+        wait "$player"
+    ) &
+    JOB_PID=$!
+    disown 2>/dev/null || true
+}
+
 # ─── Engines ────────────────────────────────────────────────────────────────
-# Each engine backgrounds a player and echoes that player's PID. Barge-in only
-# ever needs the PID, so it stays engine-agnostic.
+# Each engine hands its player to the queue and echoes the queue job's PID.
+# Barge-in needs only PIDs, so it stays engine-agnostic.
 
 speak_say() {
     local text="$1"
-    if [[ -n "$RATE" ]]; then
-        say -r "$RATE" -v "$VOICE" "$text" </dev/null >/dev/null 2>&1 &
-    else
-        say -v "$VOICE" "$text" </dev/null >/dev/null 2>&1 &
+    # Dry run: render to a file instead of the speakers. Same `say` binary, same
+    # queue, same PIDs — just no sound. This is what lets the test suite run on
+    # a laptop that is also in a meeting, and it exists because a test run once
+    # talked over a live call.
+    if [[ -n "$SILENT" ]]; then
+        play_queued say -v "$VOICE" -o "$STATE_DIR/$SAFE_KEY.render.aiff" "$text"
+        return
     fi
-    printf '%s' "$!"
+    if [[ -n "$RATE" ]]; then
+        play_queued say -r "$RATE" -v "$VOICE" "$text"
+    else
+        play_queued say -v "$VOICE" "$text"
+    fi
 }
 
 kokoro_is_warm() {
@@ -189,8 +419,13 @@ speak_kokoro() {
         return
     fi
 
-    afplay "$wav" </dev/null >/dev/null 2>&1 &
-    printf '%s' "$!"
+    # Dry run stands in a real short-lived process so the queue still has
+    # something to serialize on, without sending the audio anywhere.
+    if [[ -n "$SILENT" ]]; then
+        play_queued /bin/sleep 0.5
+        return
+    fi
+    play_queued afplay "$wav"
 }
 
 speak() {
@@ -205,6 +440,8 @@ speak() {
 # rather than silently degrading for weeks.
 if [[ -n "$TEST_MODE" ]]; then
     SAFE_KEY="test"
+    PID_FILE="$STATE_DIR/$SAFE_KEY.pid"
+    JOB_FILE="$STATE_DIR/$SAFE_KEY.job"
     if [[ "$ENGINE" == "kokoro" ]]; then
         if kokoro_is_warm; then
             echo "claudesay: engine=kokoro (voice server warm, voice '${CLAUDESAY_KOKORO_VOICE:-af_heart}')"
@@ -216,8 +453,8 @@ if [[ -n "$TEST_MODE" ]]; then
     else
         echo "claudesay: engine=say (voice '$VOICE')"
     fi
-    speak "Claudesay is wired correctly." >/dev/null
-    disown 2>/dev/null || true
+    speak "Claudesay is wired correctly."
+    write_state "$JOB_FILE" "$JOB_PID"
     exit 0
 fi
 
@@ -243,26 +480,16 @@ SAFE_KEY=$(printf '%s' "${SESSION_ID:-default}" | tr -c 'A-Za-z0-9._-' '_')
 LAST_FILE="$STATE_DIR/$SAFE_KEY.last"
 HASH_FILE="$STATE_DIR/$SAFE_KEY.hash"
 PID_FILE="$STATE_DIR/$SAFE_KEY.pid"
+JOB_FILE="$STATE_DIR/$SAFE_KEY.job"
 
 # Self-heal any planted symlinks. Removing a symlink with `rm -f` deletes
 # the link itself, not its target. Subsequent writes go through `mv -f`
 # (rename(2)) which atomically replaces a path even if a same-uid attacker
 # re-symlinks it between this `rm` and the write — rename swaps the dest
 # inode rather than following the link.
-for f in "$LAST_FILE" "$HASH_FILE" "$PID_FILE" "$STATE_DIR/$SAFE_KEY.wav"; do
+for f in "$LAST_FILE" "$HASH_FILE" "$PID_FILE" "$JOB_FILE" "$STATE_DIR/$SAFE_KEY.wav"; do
     [[ -L "$f" ]] && rm -f "$f"
 done
-
-# Atomic state writer — used for every state file so a TOCTOU symlink
-# can't make us write through a planted target.
-write_state() {
-    local target="$1"
-    local value="$2"
-    local tmp="$target.$$.tmp"
-    if printf '%s\n' "$value" >"$tmp" 2>/dev/null; then
-        mv -f "$tmp" "$target" 2>/dev/null || rm -f "$tmp"
-    fi
-}
 
 # Debounce — collapse rapid Stop events from the same session. Validate
 # LAST_AT is numeric before arithmetic context: bash recursively evaluates
@@ -394,26 +621,47 @@ SPEAK=$(printf '%s' "$SPEAK" | sed -E '
 # as a flag (e.g. text starting with "- list item" after markdown stripping).
 [[ "${SPEAK:0:1}" == "-" ]] && SPEAK=" $SPEAK"
 
-# Barge-in — kill only this session's previous player (PID-tracked), not
-# every `say`/`afplay` on the user's machine. Verify the PID is still one
-# of our player commands before sending SIGTERM: macOS PIDs recycle, and
-# we don't want to kill an unrelated process that inherited the PID.
+# Barge-in — cut off only this session's previous utterance, never another
+# session's and never an unrelated process. Two PIDs are involved now: the
+# player, and the queue job that may still be waiting its turn.
+#
+# Order matters. Kill the player first: its job is sitting in `wait`, so it
+# wakes, runs its EXIT trap, and releases the lock for whoever is queued
+# behind it. Killing the job first would strand the lock until the next
+# caller noticed the holder was dead.
+comm_of() {
+    local c
+    c=$(ps -p "$1" -o comm= 2>/dev/null)
+    c="${c##*/}"; c="${c##[[:space:]]}"; c="${c%%[[:space:]]}"
+    printf '%s' "$c"
+}
+
 if [[ -f "$PID_FILE" && ! -L "$PID_FILE" ]]; then
     OLD_PID=$(<"$PID_FILE")
+    # PIDs recycle on macOS, so confirm identity before signalling.
     if [[ "$OLD_PID" =~ ^[0-9]+$ ]]; then
-        OLD_COMM=$(ps -p "$OLD_PID" -o comm= 2>/dev/null)
-        OLD_COMM="${OLD_COMM##*/}"
-        OLD_COMM="${OLD_COMM##[[:space:]]}"
-        OLD_COMM="${OLD_COMM%%[[:space:]]}"
-        if [[ "$OLD_COMM" == "say" || "$OLD_COMM" == "afplay" ]]; then
-            kill "$OLD_PID" 2>/dev/null || true
-        fi
+        case "$(comm_of "$OLD_PID")" in
+            say|afplay) kill "$OLD_PID" 2>/dev/null || true ;;
+        esac
+    fi
+fi
+
+if [[ -f "$JOB_FILE" && ! -L "$JOB_FILE" ]]; then
+    OLD_JOB=$(<"$JOB_FILE")
+    # A job still queued has never started a player, so dropping it is how a
+    # stale line gets cancelled instead of eventually being spoken.
+    if [[ "$OLD_JOB" =~ ^[0-9]+$ && "$OLD_JOB" != "$$" ]]; then
+        case "$(comm_of "$OLD_JOB")" in
+            bash|sh) kill "$OLD_JOB" 2>/dev/null || true ;;
+        esac
     fi
 fi
 
 debug "speak: engine=$ENGINE voice=$VOICE rate=${RATE:-default} text=\"${SPEAK:0:80}\""
 
-PLAYER_PID=$(speak "$SPEAK")
-write_state "$PID_FILE" "$PLAYER_PID"
+# speak() sets JOB_PID; the player PID is written by the job itself once it
+# wins the queue and actually starts speaking.
+speak "$SPEAK"
+write_state "$JOB_FILE" "$JOB_PID"
 disown 2>/dev/null || true
 exit 0
