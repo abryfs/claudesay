@@ -37,7 +37,7 @@
 
 set -u
 
-CLAUDESAY_VERSION="0.6.0"
+CLAUDESAY_VERSION="0.6.1"
 
 # Where this script lives — the optional voice server sits beside it.
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || SELF_DIR="."

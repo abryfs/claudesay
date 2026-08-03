@@ -4,6 +4,24 @@ All notable changes to claudesay are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-08-04
+
+### Changed
+- **The mute hotkey is `⌥M`**, down from `⌃⌥⌘M`. Four fingers is the wrong shape
+  for a key you reach for mid-sentence. `⌘M` is Minimize, which is why it isn't
+  that. Set another with `CLAUDESAY_HOTKEY="shift+opt+k" ./install.sh`; the
+  parser rejects a modifier-less spec, since that would swallow the letter
+  system-wide.
+- README documents the hotkey and `--mute 45` only. `--unmute`, `--toggle-mute`
+  and `--mute-status` moved to `--help` and AGENTS.md: `--toggle-mute` is what
+  the hotkey calls, and the other two are for scripts, so no human needed to
+  read them next to a key that already does the job.
+
+### Removed
+- `samples/0-comparison.mp4`. It existed to be embedded as an inline player,
+  which GitHub strips from READMEs, and the waveform-video workaround was worse
+  than the gap it filled.
+
 ## [0.6.0] — 2026-08-03
 
 Fewer decisions. Everything that used to be a setting or a setup step is now a

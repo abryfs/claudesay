@@ -23,7 +23,7 @@ jq '.hooks.Stop' ~/.claude/settings.json          # the hook is wired
 ```
 
 **Tell the user two things and then stop:** it takes effect in *new* Claude Code
-sessions, and the global mute key is **⌃⌥⌘M**.
+sessions, and the global mute key is **⌥M**.
 
 ## Do not configure anything
 
@@ -33,7 +33,7 @@ handled, and reaching for them is the common mistake:
 - The engine resolves itself: neural voice on Apple Silicon with `uv`, built-in
   `say` otherwise. Leave `CLAUDESAY_ENGINE` unset.
 - Meeting detection runs by default. Leave `CLAUDESAY_MUTE_WHEN_MIC` unset.
-- `⌃⌥⌘M` is registered by the installer. Do not build a second hotkey out of
+- `⌥M` is registered by the installer. Do not build a second hotkey out of
   Shortcuts, Automator or `skhd`.
 
 ## Operating it

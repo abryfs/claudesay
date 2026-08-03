@@ -1,6 +1,6 @@
 // claudesay-hotkey — a global mute key that works from any app.
 //
-// Registers one system-wide hotkey (default ⌃⌥⌘M) and runs
+// Registers one system-wide hotkey (default ⌥M) and runs
 // `claudesay.sh --toggle-mute` when it fires.
 //
 // Uses Carbon's RegisterEventHotKey rather than a CGEventTap on purpose: an
@@ -25,8 +25,8 @@ guard args.count > 1 else {
 let hookPath = args[1]
 let keyCode = UInt32(args.count > 2 ? (UInt32(args[2]) ?? UInt32(kVK_ANSI_M)) : UInt32(kVK_ANSI_M))
 let modifiers = UInt32(args.count > 3
-    ? (UInt32(args[3]) ?? UInt32(controlKey | optionKey | cmdKey))
-    : UInt32(controlKey | optionKey | cmdKey))
+    ? (UInt32(args[3]) ?? UInt32(optionKey))
+    : UInt32(optionKey))
 
 func toggleMute() {
     let p = Process()

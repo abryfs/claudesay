@@ -102,16 +102,11 @@ Set `CLAUDESAY_MUTE_WHEN_MIC=0` to turn it off.
 
 ### By hand
 
-**⌃⌥⌘M** toggles mute from any app, focused or not. The installer registers it. It's a small Swift helper on Carbon's `RegisterEventHotKey`, which claims one chord, sees nothing else, and needs no Accessibility permission.
+**⌥M** toggles mute from any app, focused or not. It reaches sessions that are already running and stops whatever is mid-sentence. Your system volume, music and call audio are untouched.
 
-```bash
-claudesay.sh --mute 45    # 45 minutes, then it lifts itself
-claudesay.sh --mute       # until you say otherwise
-claudesay.sh --unmute
-claudesay.sh --mute-status
-```
+The installer registers it: a small Swift helper on Carbon's `RegisterEventHotKey`, which claims one chord, sees nothing else, and needs no Accessibility permission. Pick a different one with `CLAUDESAY_HOTKEY="shift+opt+k" ./install.sh`.
 
-Mute reaches sessions that are already running and stops whatever is mid-sentence. Your system volume, music and call audio are untouched. Before a meeting, reach for `--mute 45` rather than the plain toggle.
+The one thing a toggle can't express is a deadline, so there's `claudesay.sh --mute 45` for a mute that lifts itself in 45 minutes. `--help` lists the rest.
 
 ### Over each other
 
